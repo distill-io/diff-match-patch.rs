@@ -745,7 +745,7 @@ impl Dmp {
             if line_end == -1 {
                 line_end = text.len() as i32 - 1;
             }
-            line = text[line_start as usize..=line_end as usize + 1].iter().collect();
+            line = text[line_start as usize..=line_end as usize].iter().collect();
             if linehash.contains_key(&line) {
                 if let Some(char1) = char::from_u32(linehash[&line] as u32) {
                     chars.push(char1);
