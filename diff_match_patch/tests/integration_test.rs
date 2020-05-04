@@ -71,7 +71,8 @@ pub fn test_diff_half_match() {
 #[test]
 pub fn test_diff_lines_tochars() {
     let mut dmp = diff_match_patch::Dmp::new();
-    assert_eq!(("\x01\x02\x01".to_string(), "\x02\x01\x02".to_string(), vec!["".to_string(), "alpha\n".to_string(), "beta\n".to_string()]), dmp.diff_lines_tochars(&("alpha\nbeta\nalpha\n".to_string().chars().collect()), &("beta\nalpha\nbeta\n".to_string().chars().collect())));
+    assert_eq!(("\x01\x02\x01".to_string(), "\x02\x01\x02".to_string(), vec!["".to_string(), "alpha\n".to_string(), "beta\n".to_string()]),
+                dmp.diff_lines_tochars(&("alpha\nbeta\nalpha\n".to_string().chars().collect()), &("beta\nalpha\nbeta\n".to_string().chars().collect())));
     assert_eq!(("".to_string(), "\x01\x02\x03\x03".to_string(), vec!["".to_string(), "alpha\r\n".to_string(), "beta\r\n".to_string(), "\r\n".to_string()]), dmp.diff_lines_tochars(&("".to_string().chars().collect()), &("alpha\r\nbeta\r\n\r\n\r\n".to_string().chars().collect())));
     assert_eq!(("\x01".to_string(), "\x02".to_string(), vec!["".to_string(), "a".to_string(), "b".to_string()]), dmp.diff_lines_tochars(&("a".to_string().chars().collect()), &("b".to_string().chars().collect())));
     let n: u32 = 300;
@@ -93,6 +94,17 @@ pub fn test_diff_lines_tochars() {
     assert_eq!(n as usize, chars.chars().count());
     line_list.insert(0, "".to_string());
     assert_eq!((chars, "".to_string(), line_list), dmp.diff_lines_tochars(&lines_vec, &vec![]))
+}
+
+#[test]
+pub fn test_diff_words_tochars() {
+    let mut dmp = diff_match_patch::Dmp::new();
+    assert_eq!(("\x01\x02\x03\x02\x01".to_string(), "\x03\x02\x01\x02\x03".to_string(), vec!["".to_string(), "alpha".to_string(), " ".to_string(), "beta".to_string()]),
+                dmp.diff_words_tochars(&"alpha beta alpha".to_string(), &"beta alpha beta".to_string())
+               );               
+    assert_eq!(("\x01\x02".to_string(), "\x03\x02\x01".to_string(), vec!["".to_string(), "alpha".to_string(), "\n".to_string(), "beta".to_string()]),
+                dmp.diff_words_tochars(&"alpha\n".to_string(), &"beta\nalpha".to_string())
+               );
 }
 
 

@@ -8,6 +8,7 @@ use std::fmt;
 use core::char;
 use std::iter::FromIterator;
 use std::collections::HashMap;
+use regex::Regex;
 extern crate  url;
 
 use url::percent_encoding::{
@@ -69,18 +70,18 @@ impl Diff {
 impl PartialEq for Diff {
     // it will return if two diff objects are equal.
     fn eq(&self, other: &Self) -> bool {
-        ((self.operation == other.operation) & (self.text == other.text))
+        (self.operation == other.operation) & (self.text == other.text)
     }
 }
 
 impl PartialEq for Patch {
     // it will return if two patch objects are equal or not.
     fn eq(&self, other: &Self) -> bool {
-        ((self.diffs == other.diffs) & 
+        (self.diffs == other.diffs) & 
         (self.start1 == other.start1) & 
         (self.start2 == other.start2) &
         (self.length1 == other.length1) &
-        (self.length2 == other.length2))
+        (self.length2 == other.length2)
     }
 }
 
@@ -697,7 +698,70 @@ impl Dmp {
         diffs.append(&mut diffsb);
         diffs
     }
-    
+
+    pub fn diff_words_tochars(&mut self, text1: &String, text2: &String) -> (String, String, Vec<String>) {
+        /*
+        Split two texts into an array of strings.  Reduce the texts to a string
+        of hashes where each Unicode character represents one word.
+
+        Args:
+            text1: First chars.
+            text2: Second chars.
+
+        Returns:
+            Three element tuple, containing the encoded text1, the encoded text2 and
+            the array of unique strings.  The zeroth element of the array of unique
+            strings is intentionally blank.
+        */
+        
+        let mut wordarray: Vec<String> = vec!["".to_string()];
+        let mut wordhash: HashMap<String, u32> = HashMap::new();
+        let chars1 = self.diff_words_tochars_munge(text1, &mut wordarray, &mut wordhash);
+        let mut dmp = Dmp::new();
+        let chars2 = dmp.diff_words_tochars_munge(text2, &mut wordarray, &mut wordhash);
+        (chars1, chars2, wordarray)
+    }
+
+    pub fn diff_words_tochars_munge(&mut self, text: &String, wordarray: &mut Vec<String>, wordhash: &mut HashMap<String, u32>) -> String {
+        /*
+        Split a text into an array of strings.  Reduce the texts to a string
+        of hashes where each Unicode character represents one word.
+        Modifies wordarray and wordhash through being a closure.
+
+        Args:
+            text: chars to encode.
+
+        Returns:
+            Encoded string.
+        */
+        let mut chars = "".to_string();
+
+        let re = Regex::new(r"[\s\n\r]").unwrap();
+        let mut prev_end: usize = 0;
+        for part in re.find_iter(&text){
+            if prev_end < part.start() {
+                let word = &text[prev_end .. part.start()];
+                chars += &self.make_token_dict(word, wordarray, wordhash);
+            }
+            let word = &text[part.start() .. part.end()];
+            chars += &self.make_token_dict(word, wordarray, wordhash);
+            prev_end = part.end();
+        }
+        if prev_end < text.len(){
+            let word = &text[prev_end .. text.len()];
+            chars += &self.make_token_dict(word, wordarray, wordhash);
+        }
+        chars
+    }
+
+    fn make_token_dict(&mut self, word: &str , wordarray: &mut Vec<String>, wordhash: &mut HashMap<String, u32>) -> String {
+        if !wordhash.contains_key(word){
+            wordarray.push(word.to_string());
+            wordhash.insert(word.to_string(), wordarray.len() as u32 - 1);
+        }
+        char::from_u32(wordhash[word]).unwrap().to_string()
+    }
+   
     pub fn diff_lines_tochars(&mut self, text1: &Vec<char>, text2: &Vec<char>) -> (String, String, Vec<String>) {
         /*
         Split two texts into an array of strings.  Reduce the texts to a string
