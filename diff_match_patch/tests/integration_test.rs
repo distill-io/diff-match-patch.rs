@@ -105,6 +105,31 @@ pub fn test_diff_words_tochars() {
     assert_eq!(("\x01\x02".to_string(), "\x03\x02\x01".to_string(), vec!["".to_string(), "alpha".to_string(), "\n".to_string(), "beta".to_string()]),
                 dmp.diff_words_tochars(&"alpha\n".to_string(), &"beta\nalpha".to_string())
                );
+    let old_string = "betty bought some butter ".to_string();
+    let new_string = "betty sought some butter".to_string();
+    let mut diff_arr = vec![
+        diff_match_patch::Diff::new(0, "betty ".to_string()),
+        diff_match_patch::Diff::new(-1, "b".to_string()),
+        diff_match_patch::Diff::new(1, "s".to_string()),
+        diff_match_patch::Diff::new(0, "ought some butter".to_string()),
+        diff_match_patch::Diff::new(-1, " ".to_string())
+    ];
+    println!("{:?}", diff_arr);
+    assert_eq!(diff_arr, dmp.diff_main(&old_string, &new_string, true));
+
+    diff_arr = vec![
+        diff_match_patch::Diff::new(0, "betty ".to_string()),
+        diff_match_patch::Diff::new(-1, "bought".to_string()),
+        diff_match_patch::Diff::new(1, "sought".to_string()),
+        diff_match_patch::Diff::new(0, " some butter".to_string()),
+        diff_match_patch::Diff::new(-1, " ".to_string())
+    ];
+
+    let (chars1, chars2, hash_arr) = dmp.diff_words_tochars(&old_string, &new_string);
+    let mut res_diffs = dmp.diff_main(&chars1, &chars2, true);
+    dmp.diff_chars_tolines(&mut res_diffs, &hash_arr);
+    println!("{:?}",&res_diffs);
+    assert_eq!(diff_arr, res_diffs);
 }
 
 
