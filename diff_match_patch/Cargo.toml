@@ -1,6 +1,6 @@
 [package]
 name = "diff_match_patch"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["chandan <chandanmahi1998@gmail.com>"]
 edition = "2018"
 description = "Diff Match Patch is a high-performance library in Rust-lang that manipulates plain text."
