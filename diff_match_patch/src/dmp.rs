@@ -2817,7 +2817,7 @@ impl Patch {
                     }
                 }
                 if is {
-                    text.push(text_vec[i]);
+                    text.push(*text_vec_item);
                     continue;
                 }
                 else if *text_vec_item == '%' {
