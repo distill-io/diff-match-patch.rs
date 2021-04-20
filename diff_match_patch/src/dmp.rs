@@ -2533,7 +2533,7 @@ impl Dmp {
             let mut start1 = bigpatch.start1;
             let mut start2 = bigpatch.start2;
             let mut precontext: Vec<char> = vec![];
-            while bigpatch.diffs.is_empty() {
+            while !bigpatch.diffs.is_empty() {
                 // Create one of several smaller patches.
                 let mut patch = Patch::new(vec![], 0, 0, 0, 0);
                 let mut empty = true;
@@ -2544,7 +2544,7 @@ impl Dmp {
                     patch.length2 = precontext.len() as i32;
                     patch.diffs.push(Diff::new(0, precontext.clone().iter().collect()));
                 }
-                while bigpatch.diffs.is_empty() && patch.length1 < patch_size - self.patch_margin {
+                while !bigpatch.diffs.is_empty() && patch.length1 < patch_size - self.patch_margin {
                     let diff_type = bigpatch.diffs[0].operation;
                     let mut diff_text: Vec<char> = bigpatch.diffs[0].text.chars().collect();
                     if diff_type == 1 {
