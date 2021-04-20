@@ -507,6 +507,23 @@ pub fn test_diff_bisect() {
     assert_eq!(vec![diff_match_patch::Diff::new(-1, "c".to_string()), diff_match_patch::Diff::new(1, "m".to_string()), diff_match_patch::Diff::new(0, "a".to_string()), diff_match_patch::Diff::new(-1, "t".to_string()), diff_match_patch::Diff::new(1, "p".to_string())] , dmp.diff_bisect(&a.chars().collect(), &b.chars().collect()));
 }
 
+#[test]
+pub fn test_diff_bisect_timeout() {
+    let mut dmp = diff_match_patch::Dmp::new();
+    dmp.diff_timeout = Some(0.0);
+
+    let a = "cat".to_string();
+    let b = "map".to_string();
+
+    let expected = vec![
+        diff_match_patch::Diff::new(-1, "cat".to_string()),
+        diff_match_patch::Diff::new(1, "map".to_string())
+    ];
+
+    let result = dmp.diff_bisect(&a.chars().collect(), &b.chars().collect());
+
+    assert_eq!(expected, result);
+}
 
 #[test]
 pub fn test_diff_main() {
