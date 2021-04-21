@@ -54,6 +54,7 @@ pub fn test_diff_common_overlap() {
 #[test]
 pub fn test_diff_half_match() {
     let mut dmp = diff_match_patch::Dmp::new();
+    dmp.diff_timeout = Some(1.0);
     let temp: Vec<String> = vec![];
     assert_eq!(temp, dmp.diff_half_match(&("1234567890".to_string().chars().collect()), &("abcdef".to_string().chars().collect())));
     assert_eq!(temp, dmp.diff_half_match(&("12345".to_string().chars().collect()), &("23".to_string().chars().collect())));
@@ -67,6 +68,13 @@ pub fn test_diff_half_match() {
     assert_eq!(dmp.split_by_char("qHillo,w,x,Hulloy,HelloHe", ','), dmp.diff_half_match(&("qHilloHelloHew".to_string().chars().collect()), &("xHelloHeHulloy".to_string().chars().collect())));
 }
 
+#[test]
+pub fn test_diff_half_match_no_timeout() {
+    let mut dmp = diff_match_patch::Dmp::new();
+    dmp.diff_timeout = None;
+    let empty_vec: Vec<String> = vec![];
+    assert_eq!(empty_vec, dmp.diff_half_match(&("qHilloHelloHew".to_string().chars().collect()), &("xHelloHeHulloy".to_string().chars().collect())));
+}
 
 #[test]
 pub fn test_diff_lines_tochars() {
@@ -523,6 +531,23 @@ pub fn test_diff_bisect() {
     assert_eq!(vec![diff_match_patch::Diff::new(-1, "c".to_string()), diff_match_patch::Diff::new(1, "m".to_string()), diff_match_patch::Diff::new(0, "a".to_string()), diff_match_patch::Diff::new(-1, "t".to_string()), diff_match_patch::Diff::new(1, "p".to_string())] , dmp.diff_bisect(&a.chars().collect(), &b.chars().collect()));
 }
 
+#[test]
+pub fn test_diff_bisect_timeout() {
+    let mut dmp = diff_match_patch::Dmp::new();
+    dmp.diff_timeout = Some(0.0);
+
+    let a = "cat".to_string();
+    let b = "map".to_string();
+
+    let expected = vec![
+        diff_match_patch::Diff::new(-1, "cat".to_string()),
+        diff_match_patch::Diff::new(1, "map".to_string())
+    ];
+
+    let result = dmp.diff_bisect(&a.chars().collect(), &b.chars().collect());
+
+    assert_eq!(expected, result);
+}
 
 #[test]
 pub fn test_diff_main() {
