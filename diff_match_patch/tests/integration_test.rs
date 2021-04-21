@@ -144,14 +144,7 @@ pub fn test_diff_chars_tolines() {
     let mut char_list: Vec<char> = vec![];
     for i in 1..n + 1 {
         line_list.push(i.to_string() + "\n");
-        match char::from_u32(i) {
-            Some(ch) => {
-                char_list.push(ch);
-            }
-            None => {
-
-            }
-        }
+        char_list.push(char::from_u32(i).unwrap());
     }
     let chars: String = char_list.into_iter().collect();
     assert_eq!(n as usize, line_list.len());
@@ -161,6 +154,7 @@ pub fn test_diff_chars_tolines() {
     let mut diffs = vec![diff_match_patch::Diff::new(-1, chars)];
     dmp.diff_chars_tolines(&mut diffs, &line_list);
     assert_eq!(diffs, vec![diff_match_patch::Diff::new(-1, lines)]);
+
     // line_list = vec![];
     // for i in 1..1115000 + 1 {
     //     line_list.push(i.to_string() + "\n");
@@ -173,7 +167,29 @@ pub fn test_diff_chars_tolines() {
     // assert_eq!(chars, diffs[0].text);
 }
 
+#[test]
+pub fn diff_lines_tochars_munge() {
+    let mut dmp = diff_match_patch::Dmp::new();
 
+    // Unicode codepoints from 55296 to 57344 are reserved and can't be used as a scalar
+    let number_of_lines = 60000;
+
+    let mut text: Vec<char> = Vec::with_capacity(number_of_lines);
+    for i in 0..=number_of_lines {
+        text.extend(i.to_string().chars());
+        if i + 1 < number_of_lines {
+            text.extend("\n".chars());
+        }
+    }
+
+    let mut linearray: Vec<String> = vec!["".to_string()];
+    let mut linehash: HashMap<String, i32> = HashMap::new();
+    let chars1 = dmp.diff_lines_tochars_munge(&text, &mut linearray, &mut linehash);
+
+    assert_eq!(chars1.chars().count(), number_of_lines);
+    assert_eq!(linearray.len() - 1, number_of_lines);
+    assert_eq!(linehash.len(), number_of_lines);
+}
 
 #[test]
 pub fn test_diff_cleanup_merge() {
