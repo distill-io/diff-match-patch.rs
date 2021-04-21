@@ -1039,6 +1039,12 @@ impl Dmp {
         the prefix of text2, the suffix of text2 and the common middle.  Or empty vector
         if there was no match.
         */
+
+        // Don't risk returning a non-optimal diff if we have unlimited time.
+        if self.diff_timeout.is_none() {
+            return vec![]
+        }
+
         let (long_text, short_text) = if text1.len() > text2.len() {
             (text1, text2)
         }
