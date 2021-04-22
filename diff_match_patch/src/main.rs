@@ -1,3 +1,0 @@
-mod dmp;
-fn main() {
-}
