@@ -10,6 +10,7 @@ use std::iter::FromIterator;
 use std::collections::HashMap;
 use std::result::Result;
 use std::error::Error;
+use std::time::Instant;
 use regex::Regex;
 extern crate  url;
 
@@ -31,8 +32,8 @@ pub enum LengthUnit {
 
 #[allow(dead_code)]
 pub struct Dmp {
-    pub text1: String,
-    pub text2: String,
+    // Number of seconds to map a diff before giving up (None for infinity).
+    pub diff_timeout: Option<f32>,
     // Cost of an empty edit operation in terms of edit characters.
     pub edit_cost: i32,
     /*How far to search for a match (0 = exact location, 1000+ = broad match).
@@ -217,26 +218,30 @@ impl Dmp {
     #[allow(dead_code)]
     pub fn new() -> Self {
         // it will give a new dmp object.
-        Dmp { patch_delete_threshold: 0.5, text1: "".to_string(), text2: "".to_string(), edit_cost: 0, match_distance: 1000, patch_margin: 4, match_maxbits: 32, match_threshold: 0.5}
+        Dmp { diff_timeout: None, patch_delete_threshold: 0.5, edit_cost: 0, match_distance: 1000, patch_margin: 4, match_maxbits: 32, match_threshold: 0.5}
     }
 
     #[allow(dead_code)]
     pub fn diff_main(&mut self, text1: &str, text2: &str, checklines: bool) -> Vec<Diff> {
-    /*Find the differences between two chars.  Simplifies the problem by
-      stripping any common prefix or suffix off the texts before diffing.
-      
-    Args:
-      text1: Old chars to be diffed.
-      text2: New chars to be diffed.
-      checklines: Optional speedup flag.  If present and false, then don't run
-      a line-level diff first to identify the changed areas.
-      Defaults to true, which does a faster, slightly less optimal diff.
-    Returns:
-      Vector of diffs as changes.
+        /*
+        Find the differences between two chars.  Simplifies the problem by
+        stripping any common prefix or suffix off the texts before diffing.
+    
+        Args:
+            text1: Old chars to be diffed.
+            text2: New chars to be diffed.
+            checklines: Optional speedup flag. If present and false, then don't run
+                a line-level diff first to identify the changed areas.
+                Defaults to true, which does a faster, slightly less optimal diff.
+        Returns:
+            Vector of diffs as changes.
+        */
 
-      */
+        self.diff_main_internal(text1, text2, checklines, Instant::now())
+    }
 
-        // cheack for empty text
+    fn diff_main_internal(&mut self, text1: &str, text2: &str, checklines: bool, start_time: Instant) -> Vec<Diff> {
+        // check for empty text
         if text1.is_empty() && text2.is_empty() {
             return vec![];
         }
@@ -273,7 +278,7 @@ impl Dmp {
         }
 
         // Compute the diff on the middle block.
-        let temp = self.diff_compute(&char1, &char2, checklines);
+        let temp = self.diff_compute(&char1, &char2, checklines, start_time);
         for z in temp {
             diffs.push(z);
         }
@@ -286,8 +291,7 @@ impl Dmp {
         diffs
     }
 
-    #[allow(dead_code)]
-    fn diff_compute(&mut self, text1: &Vec<char>, text2: &Vec<char>, checklines: bool) -> Vec<Diff> {
+    fn diff_compute(&mut self, text1: &Vec<char>, text2: &Vec<char>, checklines: bool, start_time: Instant) -> Vec<Diff> {
         /*
         Find the differences between two texts.  Assumes that the texts do not
         have any common prefix or suffix.
@@ -365,8 +369,8 @@ impl Dmp {
             let text2_b = hm[3].clone();
             let mid_common = hm[4].clone();
             // Send both pairs off for separate processing.
-            let mut diffs_a = self.diff_main(text1_a.as_str(), text2_a.as_str(), checklines);
-            let diffs_b = self.diff_main(text1_b.as_str(), text2_b.as_str(), checklines);
+            let mut diffs_a = self.diff_main_internal(text1_a.as_str(), text2_a.as_str(), checklines, start_time);
+            let diffs_b = self.diff_main_internal(text1_b.as_str(), text2_b.as_str(), checklines, start_time);
             diffs_a.push(Diff::new(0, mid_common));
             // Merge the result.
             for x in diffs_b {
@@ -375,9 +379,9 @@ impl Dmp {
             return diffs_a;
         }
         if checklines && text1.len() > 100 && text2.len() > 100 {
-            return self.diff_linemode(text1, text2);
+            return self.diff_linemode_internal(text1, text2, start_time);
         }
-        self.diff_bisect(text1, text2)
+        self.diff_bisect_internal(text1, text2, start_time)
     }
     
     fn kmp(&mut self, text1: &Vec<char>, text2: &Vec<char>, ind: usize) -> i32 {
@@ -441,7 +445,6 @@ impl Dmp {
         -1
     }
     
-    #[allow(dead_code)]
     fn rkmp(&mut self, text1: &Vec<char>, text2: &Vec<char>, ind: usize) -> i32 {
         /*
         Find the last index before a specific index in text1 where patern is present.
@@ -503,6 +506,7 @@ impl Dmp {
         ans
     }
 
+    #[allow(dead_code)]
     pub fn diff_linemode(&mut self, text1: &Vec<char>, text2: &Vec<char>) -> Vec<Diff> {
         /*
         Do a quick line-level diff on both chars, then rediff the parts for
@@ -516,11 +520,16 @@ impl Dmp {
         Returns:
             Vector of diffs as changes.
         */
+
+        self.diff_linemode_internal(text1, text2, Instant::now())
+    }
+
+    fn diff_linemode_internal(&mut self, text1: &Vec<char>, text2: &Vec<char>, start_time: Instant) -> Vec<Diff> {
         // Scan the text on a line-by-line basis first.
         let (text3, text4, linearray) = self.diff_lines_tochars(text1, text2);
         
         let mut dmp = Dmp::new();
-        let  mut diffs: Vec<Diff> = dmp.diff_main(text3.as_str(), text4.as_str(), false);
+        let mut diffs: Vec<Diff> = dmp.diff_main_internal(text3.as_str(), text4.as_str(), false, start_time);
         
         // Convert the diff back to original text.
         self.diff_chars_tolines(&mut diffs, &linearray);
@@ -549,7 +558,7 @@ impl Dmp {
                 // Upon reaching an equality, check for prior redundancies.
                 if count_delete >= 1 && count_insert >= 1 {
                     // Delete the offending records and add the merged ones.
-                    let sub_diff = self.diff_main(text_delete.as_str(), text_insert.as_str(),false);
+                    let sub_diff = self.diff_main_internal(text_delete.as_str(), text_insert.as_str(), false, start_time);
                     for z in sub_diff {
                         temp.push(z);
                     }
@@ -574,6 +583,8 @@ impl Dmp {
         temp.pop(); //Remove the dummy entry at the end.
         temp
     }
+
+    #[allow(dead_code)]
     pub fn diff_bisect(&mut self, char1: &Vec<char>, char2: &Vec<char>) -> Vec<Diff> {
         /*
         Find the 'middle snake' of a diff, split the problem in two
@@ -587,7 +598,11 @@ impl Dmp {
         Returns:
                 Vector of diffs as changes.            
         */
-        
+
+        self.diff_bisect_internal(char1, char2, Instant::now())
+    }
+
+    fn diff_bisect_internal(&mut self, char1: &Vec<char>, char2: &Vec<char>, start_time: Instant) -> Vec<Diff> {       
         let text1_length = char1.len() as i32;
         let text2_length = char2.len() as i32;
         let max_d: i32 = (text1_length + text2_length + 1)/2;
@@ -608,6 +623,10 @@ impl Dmp {
         let mut k2start: i32 = 0;
         let mut k2end: i32 = 0;
         for d in 0..max_d {
+            if self.diff_timeout.is_some() && start_time.elapsed().as_secs_f32() >= self.diff_timeout.unwrap() {
+                break;
+            }
+            
             let d1 = d as i32;
             let mut k1 = -d1 + k1start;
             let mut x1: i32;
@@ -662,7 +681,7 @@ impl Dmp {
                         x2 = text1_length - v2[k2_offset as usize];
                         if x1 >= x2 {
                             // Overlap detected.
-                            return self.diff_bisect_split(char1, char2, x1, y1);
+                            return self.diff_bisect_split(char1, char2, x1, y1, start_time);
                         }
                     }
                 }
@@ -719,7 +738,7 @@ impl Dmp {
                         x2 = text1_length - x2;
                         if x1 >= x2 {
                             // Overlap detected.
-                            return self.diff_bisect_split(char1, char2, x1, y1);
+                            return self.diff_bisect_split(char1, char2, x1, y1, start_time);
                         }
                     }
                 }
@@ -730,7 +749,7 @@ impl Dmp {
         vec![Diff::new(-1, char1.iter().collect()), Diff::new(1, char2.iter().collect())]
     }
 
-    fn diff_bisect_split(&mut self, text1: &Vec<char>, text2: &Vec<char>, x: i32, y: i32) -> Vec<Diff> {
+    fn diff_bisect_split(&mut self, text1: &Vec<char>, text2: &Vec<char>, x: i32, y: i32, start_time: Instant) -> Vec<Diff> {
         /*
         Given the location of the 'middle snake', split the diff in two parts
         and recurse.
@@ -751,8 +770,8 @@ impl Dmp {
         let text2b: String = text2[(y as usize)..].iter().collect();
         
         // Compute both diffs serially.
-        let mut diffs = self.diff_main(text1a.as_str(), text2a.as_str(), false);
-        let mut diffsb = self.diff_main(text1b.as_str(), text2b.as_str(), false);
+        let mut diffs = self.diff_main_internal(text1a.as_str(), text2a.as_str(), false, start_time);
+        let mut diffsb = self.diff_main_internal(text1b.as_str(), text2b.as_str(), false, start_time);
         diffs.append(&mut diffsb);
         diffs
     }
@@ -875,18 +894,25 @@ impl Dmp {
                 }
             }
             else {
-                if linearray.len() == 1_114_111 {
-                    // Bail out at 1114111 because chr(1114112) throws.
+                let mut u32char = linearray.len() as i32;
+
+                // skip reserved range - U+D800 to U+DFFF
+                // unicode code points in this range can't be converted to unicode scalars
+                if u32char >= 55296 {
+                    u32char += 2048;
+                }
+
+                // 1114111 is the biggest unicode scalar, so stop here
+                if u32char == 1114111 {
                     line = text[(line_start as usize)..].iter().collect();
                     line_end = text.len() as i32 - 1;
                 }
-                line_start = line_end + 1;
+
                 linearray.push(line.clone());
-                linehash.insert(line.clone(), linearray.len() as i32 - 1);
-                if let Some(char1) = char::from_u32(linehash[&line] as u32) {
-                    chars.push(char1);
-                    line_start = line_end + 1;
-                }
+                linehash.insert(line.clone(), u32char);
+
+                chars.push(char::from_u32(u32char as u32).unwrap());
+                line_start = line_end + 1;
             }
         }
         chars
@@ -1078,6 +1104,12 @@ impl Dmp {
         the prefix of text2, the suffix of text2 and the common middle.  Or empty vector
         if there was no match.
         */
+
+        // Don't risk returning a non-optimal diff if we have unlimited time.
+        if self.diff_timeout.is_none() {
+            return vec![]
+        }
+
         let (long_text, short_text) = if text1.len() > text2.len() {
             (text1, text2)
         }
