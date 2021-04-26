@@ -2191,7 +2191,7 @@ impl Dmp {
                     rd[j as usize] = ((rd[j as usize + 1] << 1) | 1) & char_match;//>>
                 }
                 else {
-                    rd[j as usize] = (((rd[j as usize + 1] << 1) | 1) & char_match) | ((last_rd[j as usize + 1] | (last_rd[j as usize] << 1)) | 1) | last_rd[j as usize + 1];//>>>>
+                    rd[j as usize] = (((rd[j as usize + 1] << 1) | 1) & char_match) | (((last_rd[j as usize + 1] | last_rd[j as usize]) << 1) | 1) | last_rd[j as usize + 1];//>>>>
                 }
                 if (rd[j as usize] & matchmask) != 0 {
                     let score: f32 = self.match_bitap_score(d as i32, j - 1, loc, patern);
