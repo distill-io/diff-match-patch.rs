@@ -147,7 +147,8 @@ pub fn test_diff_chars_tolines() {
     let mut diffs = vec![diff_match_patch::Diff::new(0, "\x01\x02\x01".to_string()), diff_match_patch::Diff::new(1, "\x02\x01\x02".to_string())];
     dmp.diff_chars_tolines(&mut diffs, &vec!["".to_string(), "alpha\n".to_string(), "beta\n".to_string()]);
     assert_eq!(vec![diff_match_patch::Diff::new(0, "alpha\nbeta\nalpha\n".to_string()), diff_match_patch::Diff::new(1, "beta\nalpha\nbeta\n".to_string())], diffs);
-    let n: u32 = 30;
+
+    let n: u32 = 300;
     let mut line_list: Vec<String> = vec![];
     let mut char_list: Vec<char> = vec![];
     for i in 1..n + 1 {
@@ -162,17 +163,6 @@ pub fn test_diff_chars_tolines() {
     let mut diffs = vec![diff_match_patch::Diff::new(-1, chars)];
     dmp.diff_chars_tolines(&mut diffs, &line_list);
     assert_eq!(diffs, vec![diff_match_patch::Diff::new(-1, lines)]);
-
-    // line_list = vec![];
-    // for i in 1..1115000 + 1 {
-    //     line_list.push(i.to_string() + "\n");
-    // }
-    // chars = line_list.join("");
-    // let mut temp: Vec<char> = chars.chars().collect();
-    // let (temp1, temp2, results) = dmp.diff_lines_tochars(&temp, &vec![]);
-    // diffs = vec![diff_match_patch::Diff::new(1, results[0].clone())];
-    // dmp.diff_chars_tolines(&mut diffs, results[2].clone().chars().collect()));
-    // assert_eq!(chars, diffs[0].text);
 }
 
 #[test]
@@ -612,9 +602,24 @@ pub fn test_diff_delta() {
 
 #[test]
 pub fn test_diff_xindex() {
+    let mut dmp = diff_match_patch::Dmp::new();
 
+    // Translate a location in text1 to text2.
+    let mut diffs = vec![
+        diff_match_patch::Diff::new(-1, "a".to_string()),
+        diff_match_patch::Diff::new(1, "1234".to_string()),
+        diff_match_patch::Diff::new(0, "xyz".to_string()),
+    ];
+    assert_eq!(5, dmp.diff_xindex(&diffs, 2));
+    
+    // Translation on deletion.
+    diffs = vec![
+        diff_match_patch::Diff::new(0, "a".to_string()),
+        diff_match_patch::Diff::new(-1, "1234".to_string()),
+        diff_match_patch::Diff::new(0, "xyz".to_string()),
+    ];
+    assert_eq!(1, dmp.diff_xindex(&diffs, 3));
 }
-
 
 #[test]
 pub fn test_diff_levenshtein() {
@@ -671,14 +676,9 @@ pub fn test_diff_main() {
     assert_eq!(vec![diff_match_patch::Diff::new(1, "xaxcx".to_string()), diff_match_patch::Diff::new(0, "abc".to_string()), diff_match_patch::Diff::new(-1, "y".to_string())], new_dmp.diff_main("abcy", "xaxcxabc", false));
     assert_eq!(vec![diff_match_patch::Diff::new(-1, "ABCD".to_string()), diff_match_patch::Diff::new(0, "a".to_string()), diff_match_patch::Diff::new(-1, "=".to_string()), diff_match_patch::Diff::new(1, "-".to_string()), diff_match_patch::Diff::new(0, "bcd".to_string()), diff_match_patch::Diff::new(-1, "=".to_string()), diff_match_patch::Diff::new(1, "-".to_string()), diff_match_patch::Diff::new(0, "efghijklmnopqrs".to_string()), diff_match_patch::Diff::new(-1, "EFGHIJKLMNOefg".to_string())], new_dmp.diff_main("ABCDa=bcd=efghijklmnopqrsEFGHIJKLMNOefg", "a-bcd-efghijklmnopqrs", false));
     assert_eq!(vec![diff_match_patch::Diff::new(1, " ".to_string()), diff_match_patch::Diff::new(0, "a".to_string()), diff_match_patch::Diff::new(1, "nd".to_string()), diff_match_patch::Diff::new(0, " [[Pennsylvania]]".to_string()), diff_match_patch::Diff::new(-1, " and [[New".to_string())], new_dmp.diff_main("a [[Pennsylvania]] and [[New", " and [[Pennsylvania]]", false));
-
-    // let mut a: String = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n".to_string();
-    // let mut b: String = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n".to_string();
-    // for x in 0..10 {
-    //     a += a.clone().as_str();
-    //     b += b.clone().as_str();
-    // }
-
+        
+    // Test the linemode speedup.
+    // Must be long to pass the 100 char cutoff.
     let mut a = "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n";
     let mut b = "abcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\n";
     assert_eq!(new_dmp.diff_main(a, b, true), new_dmp.diff_main(a, b, false));
@@ -734,6 +734,9 @@ pub fn test_match_bitap() {
     assert_eq!(0, dmp.match_bitap(&("abcdef".chars().collect()), &("xabcdefy".chars().collect()), 0));
 
     // Threshold test.
+    dmp.match_threshold = 0.4;
+    assert_eq!(4, dmp.match_bitap(&("abcdefghijk".chars().collect()), &("efxyhi".chars().collect()), 1));
+
     dmp.match_threshold = 0.3;
     assert_eq!(-1, dmp.match_bitap(&("abcdefghijk".chars().collect()), &("efxyhi".chars().collect()), 1));
 
@@ -904,7 +907,6 @@ pub fn test_patch_make() {
 #[test]
 pub fn test_patch_splitmax() {
     let mut dmp = diff_match_patch::Dmp::new();
-    // Assumes that Match_MaxBits is 31.
     dmp.match_maxbits = 32;
     let mut patches = dmp.patch_make1("abcdefghijklmnopqrstuvwxyz01234567890", "XabXcdXefXghXijXklXmnXopXqrXstXuvXwxXyzX01X23X45X67X89X0");
     dmp.patch_splitmax(&mut patches);
