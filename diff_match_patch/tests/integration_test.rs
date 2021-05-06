@@ -1026,4 +1026,9 @@ pub fn test_patch_apply() {
     patches = dmp.patch_make1("y", "y123");
     results = dmp.patch_apply(&mut patches, "x");
     assert_eq!(("x123".chars().collect(), vec![true]), results);
+
+    // Applying "delete" patch on an empty text.
+    patches = dmp.patch_make1("test", "");
+    results = dmp.patch_apply(&mut patches, "");
+    assert_eq!(("".chars().collect(), vec![true]), results);
 }

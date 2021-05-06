@@ -2496,22 +2496,20 @@ impl Dmp {
         Returns:
             Two element Vector, containing the new chars and an Vector of boolean values.
       */
-        let mut text = (source_text.to_string()).chars().collect();
-       
+
         if patches.is_empty() {
-            let temp: Vec<bool> = vec![];
-            return (text, temp);
+            return (source_text.chars().collect(), vec![]);
         }
 
         // Deep copy the patches so that no changes are made to originals.
         let mut patches_copy: Vec<Patch> =self.patch_deep_copy(patches);
         
-        let mut null_padding: Vec<char> = self.patch_add_padding(&mut patches_copy);
-        text.extend(null_padding.iter().cloned());
-        let temp1 = null_padding[..].to_vec();
-        null_padding.extend(text.iter().cloned());
-        text = null_padding;
-        null_padding = temp1;
+        let null_padding: Vec<char> = self.patch_add_padding(&mut patches_copy);
+
+        let mut text = null_padding.clone();
+        text.extend(source_text.chars());
+        text.extend(&null_padding);
+
         self.patch_splitmax(&mut patches_copy);
         
         // delta keeps track of the offset between the expected and actual location
@@ -2553,9 +2551,19 @@ impl Dmp {
             }
             else {
                 // Found a match.  :)
-                results[x as usize] = true;
+                results[x] = true;
                 delta = start_loc - expected_loc;
-                let text2: Vec<char> = if end_loc == -1 { text[start_loc as usize..(start_loc as usize + text1.len())].to_vec()} else { text[start_loc as usize..min(end_loc + self.match_maxbits, text.len() as i32) as usize].to_vec() };
+
+                let mut end_index: usize;
+                if end_loc == -1 {
+                    end_index = start_loc as usize + text1.len();
+                } else {
+                    end_index = (end_loc + self.match_maxbits) as usize;
+                }
+                end_index = std::cmp::min(text.len(), end_index);
+
+                let text2: Vec<char> = text[start_loc as usize..end_index].to_vec();
+
                 if text1 == text2 {
                     // Perfect match, just shove the replacement text in.
                     let temp3: String = text[..start_loc as usize].iter().collect();
