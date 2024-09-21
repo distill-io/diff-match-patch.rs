@@ -119,7 +119,7 @@ fn min1(x: f32, y: f32) -> f32 {
 
 /// it will return the first index of a character after a index or return -1 if not found.
 fn find_char(cha: char, text: &[char], start: usize) -> i32 {
-    text.into_iter()
+    text.iter()
         .enumerate()
         .skip(start)
         .find(|(_, text_item)| **text_item == cha)
