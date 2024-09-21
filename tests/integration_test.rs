@@ -1,5 +1,5 @@
 use core::char;
-use diff_match_patch::{Diff, Dmp, LengthUnit, Patch};
+use rusty_diff_match_patch::{Diff, Dmp, LengthUnit, Patch};
 use std::collections::HashMap;
 
 pub fn diff_rebuildtexts(diffs: Vec<Diff>) -> Vec<String> {

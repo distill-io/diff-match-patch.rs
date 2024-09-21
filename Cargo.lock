@@ -12,14 +12,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diff_match_patch"
-version = "0.3.0"
-dependencies = [
- "regex",
- "url",
-]
-
-[[package]]
 name = "idna"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -71,6 +63,14 @@ name = "regex-syntax"
 version = "0.6.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fe5bd57d1d7414c6b5ed48563a2c855d995ff777729dcd91c369ec7fea395ae"
+
+[[package]]
+name = "rusty_diff_match_patch"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "url",
+]
 
 [[package]]
 name = "smallvec"

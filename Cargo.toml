@@ -1,11 +1,11 @@
 [package]
-name = "diff_match_patch"
-version = "0.3.0"
-authors = ["chandan <chandanmahi1998@gmail.com>"]
-edition = "2018"
-description = "Diff Match Patch is a high-performance library in Rust-lang that manipulates plain text."
-homepage = "https://github.com/distill-io/diff-match-patch.rs"
-repository = "https://github.com/distill-io/diff-match-patch.rs"
+name = "rusty_diff_match_patch"
+version = "0.1.0"
+authors = ["mahmoud-eltahawy <gemmy9300@gmail.com>"]
+edition = "2021"
+description = "diff_match_patch fork with rusty interface."
+homepage = "https://github.com/mahmoud-eltahawy/diff-match-patch"
+repository = "https://github.com/mahmoud-eltahawy/diff-match-patch"
 keywords = ["diff", "diff-match-patch"]
 categories = ["Development tools", "Text processing"]
 license = "MIT"
@@ -14,5 +14,3 @@ license = "MIT"
 [dependencies]
 url = "1.7.2"
 regex = "1.3.7"
-
-# percent-encoding = "^2.3"

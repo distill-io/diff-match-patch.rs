@@ -13,7 +13,6 @@ use std::fmt::{self, Display};
 use std::iter::FromIterator;
 use std::result::Result;
 use std::time::Instant;
-extern crate url;
 
 use super::percent_encoding::percent_decode_u16;
 
