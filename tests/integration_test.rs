@@ -1,4 +1,3 @@
-use core::char;
 use rusty_diff_match_patch::{Diff, Dmp, LengthUnit, Patch};
 use std::collections::HashMap;
 

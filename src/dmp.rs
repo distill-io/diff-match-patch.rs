@@ -4,7 +4,6 @@ Computes the difference between two texts to create a patch.
 Applies the patch onto another text, allowing for errors.
 */
 
-use core::char;
 use regex::Regex;
 use std::cmp::{max, min};
 use std::collections::HashMap;
@@ -27,11 +26,11 @@ pub struct Dmp {
     // Number of seconds to map a diff before giving up (None for infinity).
     pub diff_timeout: Option<f32>,
     // Cost of an empty edit operation() in terms of edit characters.
-    pub edit_cost: i32,
+    pub edit_cost: usize,
     /*How far to search for a match (0 = exact location, 1000+ = broad match).
     A match this many characters away from the expected location will add
     1.0 to the score (0.0 is a perfect match).*/
-    pub match_distance: i32,
+    pub match_distance: usize,
     // Chunk size for context length.
     pub patch_margin: i32,
     /*The number of bits in an int.
@@ -1441,7 +1440,7 @@ impl Dmp {
         let mut post_del = false; // Is there a deletion operation() after the last equality.
         while (pointer as usize) < diffs.len() {
             if let Diff::Keep(txt) = &diffs[pointer as usize] {
-                if txt.len() < self.edit_cost as usize && (post_del || post_ins) {
+                if txt.len() < self.edit_cost && (post_del || post_ins) {
                     // Candidate found.
                     equalities.push(pointer);
                     pre_ins = post_ins;
@@ -1473,7 +1472,7 @@ impl Dmp {
 
                 if !last_equality.is_empty()
                     && ((pre_ins && pre_del && post_del && post_ins)
-                        || ((last_equality.chars().count() as i32) < self.edit_cost / 2
+                        || (last_equality.chars().count() < self.edit_cost / 2
                             && (pre_ins as i32
                                 + pre_del as i32
                                 + post_del as i32
