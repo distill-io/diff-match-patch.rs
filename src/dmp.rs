@@ -60,8 +60,8 @@ pub struct Patch {
     pub diffs: Vec<Diff>,
     pub start1: i32,
     pub start2: i32,
-    pub length1: i32,
-    pub length2: i32,
+    pub length1: usize,
+    pub length2: usize,
 }
 
 impl Diff {
@@ -96,7 +96,13 @@ impl Diff {
 }
 
 impl Patch {
-    pub fn new(diffs: Vec<Diff>, start1: i32, start2: i32, length1: i32, length2: i32) -> Patch {
+    pub fn new(
+        diffs: Vec<Diff>,
+        start1: i32,
+        start2: i32,
+        length1: usize,
+        length2: usize,
+    ) -> Patch {
         Patch {
             diffs,
             start1,
@@ -2228,7 +2234,7 @@ impl Dmp {
             return;
         }
         let mut pattern: Vec<char> =
-            text[patch.start2 as usize..(patch.length1 as usize + patch.start2 as usize)].to_vec();
+            text[patch.start2 as usize..(patch.length1 + patch.start2 as usize)].to_vec();
         let mut padding: i32 = 0;
 
         // Look for the first and last matches of pattern in text.  If two different
@@ -2239,7 +2245,10 @@ impl Dmp {
         {
             padding += self.patch_margin;
             pattern = text[max(0, patch.start2 - padding) as usize
-                ..min(text.len() as i32, patch.start2 + patch.length1 + padding) as usize]
+                ..min(
+                    text.len(),
+                    patch.start2 as usize + patch.length1 + padding as usize,
+                )]
                 .to_vec();
             rst += 1;
             if rst > 5 {
@@ -2259,8 +2268,11 @@ impl Dmp {
         }
 
         // Add the suffix.
-        let suffix: String = text[(patch.start2 + patch.length1) as usize
-            ..min(text.len() as i32, patch.start2 + patch.length1 + padding) as usize]
+        let suffix: String = text[(patch.start2 as usize + patch.length1)
+            ..min(
+                text.len(),
+                patch.start2 as usize + patch.length1 + padding as usize,
+            )]
             .iter()
             .collect();
         let suffix_length = suffix.chars().count() as i32;
@@ -2271,8 +2283,8 @@ impl Dmp {
         patch.start1 -= prefix_length;
         patch.start2 -= prefix_length;
         // Extend lengths.
-        patch.length1 += prefix_length + suffix_length;
-        patch.length2 += prefix_length + suffix_length;
+        patch.length1 += (prefix_length + suffix_length) as usize;
+        patch.length2 += (prefix_length + suffix_length) as usize;
     }
 
     /// Compute a list of patches to turn text1 into text2.
@@ -2344,7 +2356,7 @@ impl Dmp {
                     patch.diffs.push(diffs[i].clone());
                     let temp: Vec<char> = postpatch[char_count2 as usize..].to_vec();
                     postpatch = postpatch[..char_count2 as usize].to_vec();
-                    patch.length2 += txt.len() as i32;
+                    patch.length2 += txt.len();
                     for ch in txt.chars() {
                         postpatch.push(ch);
                     }
@@ -2357,7 +2369,7 @@ impl Dmp {
                     patch.diffs.push(diffs[i].clone());
                     let temp: Vec<char> = postpatch[(txt.len() + char_count2 as usize)..].to_vec();
                     postpatch = postpatch[..char_count2 as usize].to_vec();
-                    patch.length1 += txt.len() as i32;
+                    patch.length1 += txt.len();
                     for ch in &temp {
                         postpatch.push(*ch);
                     }
@@ -2369,8 +2381,8 @@ impl Dmp {
                     {
                         // Small equality inside a patch.
                         patch.diffs.push(diffs[i].clone());
-                        patch.length1 += txt.len() as i32;
-                        patch.length2 += txt.len() as i32;
+                        patch.length1 += txt.len();
+                        patch.length2 += txt.len();
                     }
 
                     // Time for a new patch.
@@ -2500,7 +2512,7 @@ impl Dmp {
                 // No match found.  :(
                 results[x] = false;
                 // Subtract the delta for this failed patch from subsequent patches.
-                delta -= patches_copy[x].length2 - patches_copy[x].length1;
+                delta -= patches_copy[x].length2 as i32 - patches_copy[x].length1 as i32;
             } else {
                 // Found a match.  :)
                 results[x] = true;
@@ -2608,8 +2620,8 @@ impl Dmp {
             diffs.insert(0, Diff::Keep(nullpadding.clone().iter().collect()));
             patch.start1 -= padding_length; // Should be 0.
             patch.start2 -= padding_length; // Should be 0.
-            patch.length1 += padding_length;
-            patch.length2 += padding_length;
+            patch.length1 += padding_length as usize;
+            patch.length2 += padding_length as usize;
         } else if padding_length > text_len {
             // Grow first equality.
             let extra_length = padding_length - text_len;
@@ -2618,8 +2630,8 @@ impl Dmp {
             diffs[0] = diffs[0].with_text(new_text);
             patch.start1 -= extra_length;
             patch.start2 -= extra_length;
-            patch.length1 += extra_length;
-            patch.length2 += extra_length;
+            patch.length1 += extra_length as usize;
+            patch.length2 += extra_length as usize;
         }
 
         // Add some padding on end of last diff.
@@ -2631,8 +2643,8 @@ impl Dmp {
         if diffs.is_empty() || !matches!(diffs[diffs.len() - 1], Diff::Keep(_)) {
             // Add nullPadding equality.
             diffs.push(Diff::Keep(nullpadding.clone().iter().collect()));
-            patch.length1 += padding_length;
-            patch.length2 += padding_length;
+            patch.length1 += padding_length as usize;
+            patch.length2 += padding_length as usize;
         } else if padding_length > text_len {
             // Grow last equality.
             let extra_length = padding_length - text_len;
@@ -2640,8 +2652,8 @@ impl Dmp {
             let diffs_len = diffs.len();
             new_text = diffs[diffs_len - 1].text().clone() + new_text.as_str();
             diffs[diffs_len - 1] = diffs[diffs_len - 1].with_text(new_text);
-            patch.length1 += extra_length;
-            patch.length2 += extra_length;
+            patch.length1 += extra_length as usize;
+            patch.length2 += extra_length as usize;
         }
         patch.diffs = diffs;
         let patches_len = patches.len();
@@ -2662,7 +2674,7 @@ impl Dmp {
         }
         let mut x: i32 = 0;
         while (x as usize) < patches.len() {
-            if patches[x as usize].length1 <= patch_size {
+            if patches[x as usize].length1 <= patch_size as usize {
                 x += 1;
                 continue;
             }
@@ -2679,17 +2691,19 @@ impl Dmp {
                 patch.start1 = start1 - precontext.len() as i32;
                 patch.start2 = start2 - precontext.len() as i32;
                 if !precontext.is_empty() {
-                    patch.length1 = precontext.len() as i32;
-                    patch.length2 = precontext.len() as i32;
+                    patch.length1 = precontext.len();
+                    patch.length2 = precontext.len();
                     patch
                         .diffs
                         .push(Diff::Keep(precontext.clone().iter().collect()));
                 }
-                while !bigpatch.diffs.is_empty() && patch.length1 < patch_size - self.patch_margin {
+                while !bigpatch.diffs.is_empty()
+                    && patch.length1 < (patch_size - self.patch_margin) as usize
+                {
                     match &bigpatch.diffs[0] {
                         Diff::Add(txt) => {
                             // Insertions are harmless.
-                            patch.length2 += txt.len() as i32;
+                            patch.length2 += txt.len();
                             start2 += txt.len() as i32;
                             patch.diffs.push(bigpatch.diffs[0].clone());
                             bigpatch.diffs.remove(0);
@@ -2701,7 +2715,7 @@ impl Dmp {
                                 && (txt.len() as i32) > 2 * patch_size =>
                         {
                             // This is a large deletion.  Let it pass in one chunk.
-                            patch.length1 += txt.len() as i32;
+                            patch.length1 += txt.len();
                             start1 += txt.len() as i32;
                             empty = false;
                             patch.diffs.push(bigpatch.diffs[0].with_text(txt.clone()));
@@ -2712,14 +2726,14 @@ impl Dmp {
                             let diff_text_len: i32 = txt.len() as i32;
                             let diff_text: Vec<char> = txt.chars().collect();
                             let diff_text = diff_text[..min(
-                                diff_text_len,
-                                patch_size - patch.length1 - self.patch_margin,
+                                diff_text_len as usize,
+                                patch_size as usize - patch.length1 - self.patch_margin as usize,
                             ) as usize]
                                 .to_vec();
-                            patch.length1 += diff_text.len() as i32;
+                            patch.length1 += diff_text.len();
                             start1 += diff_text.len() as i32;
                             if let Diff::Keep(_) = bigpatch.diffs[0] {
-                                patch.length2 += diff_text.len() as i32;
+                                patch.length2 += diff_text.len();
                                 start2 += diff_text.len() as i32;
                             } else {
                                 empty = false;
@@ -2754,8 +2768,8 @@ impl Dmp {
                 };
                 let postcontext_len = postcontext.chars().count() as i32;
                 if !postcontext.is_empty() {
-                    patch.length1 += postcontext_len;
-                    patch.length2 += postcontext_len;
+                    patch.length1 += postcontext_len as usize;
+                    patch.length2 += postcontext_len as usize;
                     if !patch.diffs.is_empty()
                         && matches!(patch.diffs[patch.diffs.len() - 1], Diff::Keep(_))
                     {
@@ -2844,13 +2858,13 @@ impl Dmp {
                 patch.start1 = s.parse::<i32>().unwrap() - 1;
                 temp += 1;
             } else if temp == 1 {
-                patch.length1 = s.parse::<i32>().unwrap();
+                patch.length1 = s.parse().unwrap();
                 temp += 1;
             } else if temp == 2 {
                 patch.start2 = s.parse::<i32>().unwrap() - 1;
                 temp += 1;
             } else if temp == 3 {
-                patch.length2 = s.parse::<i32>().unwrap();
+                patch.length2 = s.parse().unwrap();
                 temp += 1;
             } else {
                 panic!("Invalid patch string");
@@ -2868,7 +2882,7 @@ impl Dmp {
                     .decode_utf8()
                     .unwrap()
                     .to_string();
-                patch.length2 += temp6.chars().count() as i32;
+                patch.length2 += temp6.chars().count();
                 patch.diffs.push(Diff::Add(temp6));
             } else if text_vec[0] == '-' {
                 // Deletion.
@@ -2877,7 +2891,7 @@ impl Dmp {
                     .decode_utf8()
                     .unwrap()
                     .to_string();
-                patch.length1 += temp6.chars().count() as i32;
+                patch.length1 += temp6.chars().count();
                 patch.diffs.push(Diff::Delete(temp6));
             } else if text_vec[0] == ' ' {
                 // Minor equality.
@@ -2886,8 +2900,8 @@ impl Dmp {
                     .decode_utf8()
                     .unwrap()
                     .to_string();
-                patch.length1 += temp6.chars().count() as i32;
-                patch.length2 += temp6.chars().count() as i32;
+                patch.length1 += temp6.chars().count();
+                patch.length2 += temp6.chars().count();
                 patch.diffs.push(Diff::Keep(temp6));
             } else {
                 panic!("wrong patch string");
