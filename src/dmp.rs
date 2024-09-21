@@ -58,8 +58,8 @@ pub enum Diff {
 pub struct Patch {
     //patch object
     pub diffs: Vec<Diff>,
-    pub start1: i32,
-    pub start2: i32,
+    pub start1: usize,
+    pub start2: usize,
     pub length1: usize,
     pub length2: usize,
 }
@@ -98,8 +98,8 @@ impl Diff {
 impl Patch {
     pub fn new(
         diffs: Vec<Diff>,
-        start1: i32,
-        start2: i32,
+        start1: usize,
+        start2: usize,
         length1: usize,
         length2: usize,
     ) -> Patch {
@@ -2233,8 +2233,7 @@ impl Dmp {
         if text.is_empty() {
             return;
         }
-        let mut pattern: Vec<char> =
-            text[patch.start2 as usize..(patch.length1 + patch.start2 as usize)].to_vec();
+        let mut pattern: Vec<char> = text[patch.start2..(patch.length1 + patch.start2)].to_vec();
         let mut padding: usize = 0;
 
         // Look for the first and last matches of pattern in text.  If two different
@@ -2244,9 +2243,13 @@ impl Dmp {
             && pattern.len() < (self.match_maxbits - self.patch_margin * 2)
         {
             padding += self.patch_margin;
-            pattern = text[max(0, patch.start2 - padding as i32) as usize
-                ..min(text.len(), patch.start2 as usize + patch.length1 + padding)]
-                .to_vec();
+
+            let first = patch
+                .start2
+                .checked_sub(padding)
+                .map(|x| max(0, x))
+                .unwrap_or(0);
+            pattern = text[first..min(text.len(), patch.start2 + patch.length1 + padding)].to_vec();
             rst += 1;
             if rst > 5 {
                 break;
@@ -2256,21 +2259,23 @@ impl Dmp {
         padding += self.patch_margin;
 
         // Add the prefix.
-        let prefix: String = text
-            [max(0, patch.start2 - padding as i32) as usize..patch.start2 as usize]
-            .iter()
-            .collect();
-        let prefix_length = prefix.chars().count() as i32;
+        let first = patch
+            .start2
+            .checked_sub(padding)
+            .map(|x| max(0, x))
+            .unwrap_or(0);
+        let prefix: String = text[first..patch.start2].iter().collect();
+        let prefix_length = prefix.chars().count();
         if !prefix.is_empty() {
             patch.diffs.insert(0, Diff::Keep(prefix.clone()));
         }
 
         // Add the suffix.
-        let suffix: String = text[(patch.start2 as usize + patch.length1)
-            ..min(text.len(), patch.start2 as usize + patch.length1 + padding)]
+        let suffix: String = text[(patch.start2 + patch.length1)
+            ..min(text.len(), patch.start2 + patch.length1 + padding)]
             .iter()
             .collect();
-        let suffix_length = suffix.chars().count() as i32;
+        let suffix_length = suffix.chars().count();
         if !suffix.is_empty() {
             patch.diffs.push(Diff::Keep(suffix));
         }
@@ -2278,8 +2283,8 @@ impl Dmp {
         patch.start1 -= prefix_length;
         patch.start2 -= prefix_length;
         // Extend lengths.
-        patch.length1 += (prefix_length + suffix_length) as usize;
-        patch.length2 += (prefix_length + suffix_length) as usize;
+        patch.length1 += prefix_length + suffix_length;
+        patch.length2 += prefix_length + suffix_length;
     }
 
     /// Compute a list of patches to turn text1 into text2.
@@ -2349,8 +2354,8 @@ impl Dmp {
                 Diff::Add(txt) => {
                     // Insertion
                     patch.diffs.push(diffs[i].clone());
-                    let temp: Vec<char> = postpatch[char_count2 as usize..].to_vec();
-                    postpatch = postpatch[..char_count2 as usize].to_vec();
+                    let temp: Vec<char> = postpatch[char_count2..].to_vec();
+                    postpatch = postpatch[..char_count2].to_vec();
                     patch.length2 += txt.len();
                     for ch in txt.chars() {
                         postpatch.push(ch);
@@ -2362,8 +2367,8 @@ impl Dmp {
                 Diff::Delete(txt) => {
                     // Deletion.
                     patch.diffs.push(diffs[i].clone());
-                    let temp: Vec<char> = postpatch[(txt.len() + char_count2 as usize)..].to_vec();
-                    postpatch = postpatch[..char_count2 as usize].to_vec();
+                    let temp: Vec<char> = postpatch[(txt.len() + char_count2)..].to_vec();
+                    postpatch = postpatch[..char_count2].to_vec();
                     patch.length1 += txt.len();
                     for ch in &temp {
                         postpatch.push(*ch);
@@ -2393,11 +2398,11 @@ impl Dmp {
 
             // Update the current character count.
             if let Diff::Keep(txt) | Diff::Delete(txt) = &diffs[i] {
-                char_count1 += txt.len() as i32;
+                char_count1 += txt.len();
             }
             let temp1: &Vec<char> = &diffs[i].text().chars().collect();
             if let Diff::Keep(_) | Diff::Add(_) = &diffs[i] {
-                char_count2 += temp1.len() as i32;
+                char_count2 += temp1.len();
             }
         }
 
@@ -2471,7 +2476,7 @@ impl Dmp {
         let mut delta: i32 = 0;
         let mut results: Vec<bool> = vec![false; patches_copy.len()];
         for x in 0..patches_copy.len() {
-            let expected_loc: i32 = patches_copy[x].start2 + delta;
+            let expected_loc: i32 = patches_copy[x].start2 as i32 + delta;
             let text1: Vec<char> = self
                 .diff_text1(&mut patches_copy[x].diffs)
                 .chars()
@@ -2602,8 +2607,8 @@ impl Dmp {
 
         // Bump all the patches forward.
         for patch in patches.iter_mut() {
-            patch.start1 += padding_length as i32;
-            patch.start2 += padding_length as i32;
+            patch.start1 += padding_length;
+            patch.start2 += padding_length;
         }
         let mut patch = patches[0].clone();
         let mut diffs = patch.diffs;
@@ -2611,8 +2616,8 @@ impl Dmp {
         if diffs.is_empty() || !matches!(diffs[0], Diff::Keep(_)) {
             // Add nullPadding equality.
             diffs.insert(0, Diff::Keep(nullpadding.clone().iter().collect()));
-            patch.start1 -= padding_length as i32; // Should be 0.
-            patch.start2 -= padding_length as i32; // Should be 0.
+            patch.start1 -= padding_length; // Should be 0.
+            patch.start2 -= padding_length; // Should be 0.
             patch.length1 += padding_length;
             patch.length2 += padding_length;
         } else if padding_length > text_len as usize {
@@ -2621,8 +2626,8 @@ impl Dmp {
             let mut new_text: String = nullpadding[text_len as usize..].iter().collect();
             new_text += diffs[0].text().as_str();
             diffs[0] = diffs[0].with_text(new_text);
-            patch.start1 -= extra_length as i32;
-            patch.start2 -= extra_length as i32;
+            patch.start1 -= extra_length;
+            patch.start2 -= extra_length;
             patch.length1 += extra_length;
             patch.length2 += extra_length;
         }
@@ -2681,8 +2686,8 @@ impl Dmp {
                 // Create one of several smaller patches.
                 let mut patch = Patch::new(vec![], 0, 0, 0, 0);
                 let mut empty = true;
-                patch.start1 = start1 - precontext.len() as i32;
-                patch.start2 = start2 - precontext.len() as i32;
+                patch.start1 = start1 - precontext.len();
+                patch.start2 = start2 - precontext.len();
                 if !precontext.is_empty() {
                     patch.length1 = precontext.len();
                     patch.length2 = precontext.len();
@@ -2696,7 +2701,7 @@ impl Dmp {
                         Diff::Add(txt) => {
                             // Insertions are harmless.
                             patch.length2 += txt.len();
-                            start2 += txt.len() as i32;
+                            start2 += txt.len();
                             patch.diffs.push(bigpatch.diffs[0].clone());
                             bigpatch.diffs.remove(0);
                             empty = false;
@@ -2708,7 +2713,7 @@ impl Dmp {
                         {
                             // This is a large deletion.  Let it pass in one chunk.
                             patch.length1 += txt.len();
-                            start1 += txt.len() as i32;
+                            start1 += txt.len();
                             empty = false;
                             patch.diffs.push(bigpatch.diffs[0].with_text(txt.clone()));
                             bigpatch.diffs.remove(0);
@@ -2723,10 +2728,10 @@ impl Dmp {
                             ) as usize]
                                 .to_vec();
                             patch.length1 += diff_text.len();
-                            start1 += diff_text.len() as i32;
+                            start1 += diff_text.len();
                             if let Diff::Keep(_) = bigpatch.diffs[0] {
                                 patch.length2 += diff_text.len();
-                                start2 += diff_text.len() as i32;
+                                start2 += diff_text.len();
                             } else {
                                 empty = false;
                             }
@@ -2847,13 +2852,13 @@ impl Dmp {
                 i += 1;
             }
             if temp == 0 {
-                patch.start1 = s.parse::<i32>().unwrap() - 1;
+                patch.start1 = s.parse::<usize>().unwrap().saturating_sub(1);
                 temp += 1;
             } else if temp == 1 {
                 patch.length1 = s.parse().unwrap();
                 temp += 1;
             } else if temp == 2 {
-                patch.start2 = s.parse::<i32>().unwrap() - 1;
+                patch.start2 = s.parse::<usize>().unwrap().saturating_sub(1);
                 temp += 1;
             } else if temp == 3 {
                 patch.length2 = s.parse().unwrap();
