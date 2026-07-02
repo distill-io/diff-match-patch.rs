@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: diff_match_patch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Test (default: char-only)
+        run: cargo test --locked
+      - name: Test (grapheme feature)
+        run: cargo test --locked --all-features
+
+  oracle-differential:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: diff_match_patch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The golden corpus must be exactly what the vendored reference
+      # implementation produces; any drift fails the build.
+      - name: Regenerate golden corpus from the vendored oracle
+        run: node oracle/generate.mjs
+      - name: Corpus must match the checked-in vectors
+        run: git diff --exit-code tests/golden/corpus.json

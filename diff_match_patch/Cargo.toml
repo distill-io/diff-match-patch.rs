@@ -1,16 +1,38 @@
 [package]
 name = "diff_match_patch"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["chandan <chandanmahi1998@gmail.com>"]
-edition = "2018"
+edition = "2021"
 description = "Diff Match Patch is a high-performance library in Rust-lang that manipulates plain text."
 homepage = "https://github.com/distill-io/diff-match-patch.rs"
 repository = "https://github.com/distill-io/diff-match-patch.rs"
 keywords = ["diff", "diff-match-patch"]
 categories = ["Development tools", "Text processing"]
 license = "MIT"
+readme = "../README.md"
+# The vendored Apache-2.0 oracle is a dev-time artifact; keep it (and its
+# license) out of the published MIT crate.
+exclude = ["oracle/"]
 
+
+[lib]
+bench = false
+
+[features]
+# Grapheme-cluster segmentation support (Segmentation::Grapheme). Off by
+# default: char mode is fully Unicode-correct without it; this only adds
+# cluster-atomic diffing and the segmentation tables it needs.
+grapheme = ["dep:unicode-segmentation"]
 
 [dependencies]
-url = "1.7.2"
-regex = "1.3.7"
+percent-encoding = "2"
+unicode-segmentation = { version = "1", optional = true }
+
+[dev-dependencies]
+criterion = "0.8.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bench]]
+name = "dmp"
+harness = false

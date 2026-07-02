@@ -1,0 +1,1080 @@
+{
+  "generator": "googlediff@0.1.0 (Diff_Timeout=0, Diff_EditCost=0)",
+  "cases": [
+    {
+      "name": "identical",
+      "text1": "hello world",
+      "text2": "hello world",
+      "applyTo": "hello world",
+      "diff": [
+        [
+          0,
+          "hello world"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "hello world"
+        ]
+      ],
+      "delta": "=11",
+      "patchText": "",
+      "patchApplied": "hello world",
+      "patchResults": []
+    },
+    {
+      "name": "insert_word",
+      "text1": "the cat",
+      "text2": "the black cat",
+      "applyTo": "the cat",
+      "diff": [
+        [
+          0,
+          "the "
+        ],
+        [
+          1,
+          "black "
+        ],
+        [
+          0,
+          "cat"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "the "
+        ],
+        [
+          1,
+          "black "
+        ],
+        [
+          0,
+          "cat"
+        ]
+      ],
+      "delta": "=4\t+black \t=3",
+      "patchText": "@@ -1,7 +1,13 @@\n the \n+black \n cat\n",
+      "patchApplied": "the black cat",
+      "patchResults": [
+        true
+      ]
+    },
+    {
+      "name": "delete_word",
+      "text1": "the black cat",
+      "text2": "the cat",
+      "applyTo": "the black cat",
+      "diff": [
+        [
+          0,
+          "the "
+        ],
+        [
+          -1,
+          "black "
+        ],
+        [
+          0,
+          "cat"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "the "
+        ],
+        [
+          -1,
+          "black "
+        ],
+        [
+          0,
+          "cat"
+        ]
+      ],
+      "delta": "=4\t-6\t=3",
+      "patchText": "@@ -1,13 +1,7 @@\n the \n-black \n cat\n",
+      "patchApplied": "the cat",
+      "patchResults": [
+        true
+      ]
+    },
+    {
+      "name": "replace_word",
+      "text1": "I am the walrus",
+      "text2": "I am the eggman",
+      "applyTo": "I am the walrus",
+      "diff": [
+        [
+          0,
+          "I am the "
+        ],
+        [
+          -1,
+          "w"
+        ],
+        [
+          1,
+          "eggm"
+        ],
+        [
+          0,
+          "a"
+        ],
+        [
+          -1,
+          "lrus"
+        ],
+        [
+          1,
+          "n"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "I am the "
+        ],
+        [
+          -1,
+          "walrus"
+        ],
+        [
+          1,
+          "eggman"
+        ]
+      ],
+      "delta": "=9\t-1\t+eggm\t=1\t-4\t+n",
+      "patchText": "@@ -6,10 +6,10 @@\n the \n-walrus\n+eggman\n",
+      "patchApplied": "I am the eggman",
+      "patchResults": [
+        true
+      ]
+    },
+    {
+      "name": "common_prefix_suffix",
+      "text1": "1234xyz5678",
+      "text2": "1234abc5678",
+      "applyTo": "1234xyz5678",
+      "diff": [
+        [
+          0,
+          "1234"
+        ],
+        [
+          -1,
+          "xyz"
+        ],
+        [
+          1,
+          "abc"
+        ],
+        [
+          0,
+          "5678"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "1234"
+        ],
+        [
+          -1,
+          "xyz"
+        ],
+        [
+          1,
+          "abc"
+        ],
+        [
+          0,
+          "5678"
+        ]
+      ],
+      "delta": "=4\t-3\t+abc\t=4",
+      "patchText": "@@ -1,11 +1,11 @@\n 1234\n-xyz\n+abc\n 5678\n",
+      "patchApplied": "1234abc5678",
+      "patchResults": [
+        true
+      ]
+    },
+    {
+      "name": "multiline",
+      "text1": "line one\nline two\nline three\n",
+      "text2": "line one\nline 2\nline three\n",
+      "applyTo": "line one\nline two\nline three\n",
+      "diff": [
+        [
+          0,
+          "line one\nline "
+        ],
+        [
+          -1,
+          "two"
+        ],
+        [
+          1,
+          "2"
+        ],
+        [
+          0,
+          "\nline three\n"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "line one\nline "
+        ],
+        [
+          -1,
+          "two"
+        ],
+        [
+          1,
+          "2"
+        ],
+        [
+          0,
+          "\nline three\n"
+        ]
+      ],
+      "delta": "=14\t-3\t+2\t=12",
+      "patchText": "@@ -11,11 +11,9 @@\n ine \n-two\n+2\n %0Alin\n",
+      "patchApplied": "line one\nline 2\nline three\n",
+      "patchResults": [
+        true
+      ]
+    },
+    {
+      "name": "empty_to_text",
+      "text1": "",
+      "text2": "brand new content",
+      "applyTo": "",
+      "diff": [
+        [
+          1,
+          "brand new content"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          1,
+          "brand new content"
+        ]
+      ],
+      "delta": "+brand new content",
+      "patchText": "@@ -0,0 +1,17 @@\n+brand new content\n",
+      "patchApplied": "brand new content",
+      "patchResults": [
+        true
+      ]
+    },
+    {
+      "name": "text_to_empty",
+      "text1": "this is gone",
+      "text2": "",
+      "applyTo": "this is gone",
+      "diff": [
+        [
+          -1,
+          "this is gone"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          -1,
+          "this is gone"
+        ]
+      ],
+      "delta": "-12",
+      "patchText": "@@ -1,12 +0,0 @@\n-this is gone\n",
+      "patchApplied": "",
+      "patchResults": [
+        true
+      ]
+    },
+    {
+      "name": "word_shuffle",
+      "text1": "the quick brown fox",
+      "text2": "the brown quick fox",
+      "applyTo": "the quick brown fox",
+      "diff": [
+        [
+          0,
+          "the "
+        ],
+        [
+          -1,
+          "quick "
+        ],
+        [
+          0,
+          "brown"
+        ],
+        [
+          1,
+          " quick"
+        ],
+        [
+          0,
+          " fox"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "the "
+        ],
+        [
+          -1,
+          "quick brown"
+        ],
+        [
+          1,
+          "brown quick"
+        ],
+        [
+          0,
+          " fox"
+        ]
+      ],
+      "delta": "=4\t-6\t=5\t+ quick\t=4",
+      "patchText": "@@ -1,19 +1,19 @@\n the \n-quick brown\n+brown quick\n  fox\n",
+      "patchApplied": "the brown quick fox",
+      "patchResults": [
+        true
+      ]
+    },
+    {
+      "name": "classic_pangram",
+      "text1": "The quick brown fox jumps over the lazy dog.",
+      "text2": "The quick brown cat jumps over the sleepy dog.",
+      "applyTo": "The quick brown fox jumps over the lazy dog.",
+      "diff": [
+        [
+          0,
+          "The quick brown "
+        ],
+        [
+          -1,
+          "fox"
+        ],
+        [
+          1,
+          "cat"
+        ],
+        [
+          0,
+          " jumps over the "
+        ],
+        [
+          1,
+          "s"
+        ],
+        [
+          0,
+          "l"
+        ],
+        [
+          -1,
+          "az"
+        ],
+        [
+          1,
+          "eep"
+        ],
+        [
+          0,
+          "y dog."
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "The quick brown "
+        ],
+        [
+          -1,
+          "fox"
+        ],
+        [
+          1,
+          "cat"
+        ],
+        [
+          0,
+          " jumps over the "
+        ],
+        [
+          -1,
+          "laz"
+        ],
+        [
+          1,
+          "sleep"
+        ],
+        [
+          0,
+          "y dog."
+        ]
+      ],
+      "delta": "=16\t-3\t+cat\t=16\t+s\t=1\t-2\t+eep\t=6",
+      "patchText": "@@ -13,11 +13,11 @@\n own \n-fox\n+cat\n  jum\n@@ -32,11 +32,13 @@\n the \n-laz\n+sleep\n y do\n",
+      "patchApplied": "The quick brown cat jumps over the sleepy dog.",
+      "patchResults": [
+        true,
+        true
+      ]
+    },
+    {
+      "name": "delta_raw_chars",
+      "text1": "",
+      "text2": "a+b=c & d/e?f #g,h;i:j@k$l!m~n*o'p(q)r",
+      "applyTo": "",
+      "diff": [
+        [
+          1,
+          "a+b=c & d/e?f #g,h;i:j@k$l!m~n*o'p(q)r"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          1,
+          "a+b=c & d/e?f #g,h;i:j@k$l!m~n*o'p(q)r"
+        ]
+      ],
+      "delta": "+a+b=c & d/e?f #g,h;i:j@k$l!m~n*o'p(q)r",
+      "patchText": "@@ -0,0 +1,38 @@\n+a+b=c & d/e?f #g,h;i:j@k$l!m~n*o'p(q)r\n",
+      "patchApplied": "a+b=c & d/e?f #g,h;i:j@k$l!m~n*o'p(q)r",
+      "patchResults": [
+        true
+      ]
+    },
+    {
+      "name": "delta_escaped_chars",
+      "text1": "",
+      "text2": "tag <x> \"q\" {y} 100% back\\slash",
+      "applyTo": "",
+      "diff": [
+        [
+          1,
+          "tag <x> \"q\" {y} 100% back\\slash"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          1,
+          "tag <x> \"q\" {y} 100% back\\slash"
+        ]
+      ],
+      "delta": "+tag %3Cx%3E %22q%22 %7By%7D 100%25 back%5Cslash",
+      "patchText": "@@ -0,0 +1,31 @@\n+tag %3Cx%3E %22q%22 %7By%7D 100%25 back%5Cslash\n",
+      "patchApplied": "tag <x> \"q\" {y} 100% back\\slash",
+      "patchResults": [
+        true
+      ]
+    },
+    {
+      "name": "repeated",
+      "text1": "aaaaaaaaaa",
+      "text2": "aaaaabaaaaa",
+      "applyTo": "aaaaaaaaaa",
+      "diff": [
+        [
+          0,
+          "aaaaa"
+        ],
+        [
+          1,
+          "b"
+        ],
+        [
+          0,
+          "aaaaa"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "aaaaa"
+        ],
+        [
+          1,
+          "b"
+        ],
+        [
+          0,
+          "aaaaa"
+        ]
+      ],
+      "delta": "=5\t+b\t=5",
+      "patchText": "@@ -1,10 +1,11 @@\n aaaaa\n+b\n aaaaa\n",
+      "patchApplied": "aaaaabaaaaa",
+      "patchResults": [
+        true
+      ]
+    },
+    {
+      "name": "prose_edit",
+      "text1": "It was the best of times, it was the worst of times.",
+      "text2": "It was the best of times, it was the age of wisdom.",
+      "applyTo": "It was the best of times, it was the worst of times.",
+      "diff": [
+        [
+          0,
+          "It was the best of times, it was the "
+        ],
+        [
+          -1,
+          "worst"
+        ],
+        [
+          1,
+          "age"
+        ],
+        [
+          0,
+          " of "
+        ],
+        [
+          -1,
+          "t"
+        ],
+        [
+          1,
+          "w"
+        ],
+        [
+          0,
+          "i"
+        ],
+        [
+          1,
+          "sdo"
+        ],
+        [
+          0,
+          "m"
+        ],
+        [
+          -1,
+          "es"
+        ],
+        [
+          0,
+          "."
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "It was the best of times, it was the "
+        ],
+        [
+          -1,
+          "worst of times"
+        ],
+        [
+          1,
+          "age of wisdom"
+        ],
+        [
+          0,
+          "."
+        ]
+      ],
+      "delta": "=37\t-5\t+age\t=4\t-1\t+w\t=1\t+sdo\t=1\t-2\t=1",
+      "patchText": "@@ -34,19 +34,18 @@\n the \n-worst of times\n+age of wisdom\n .\n",
+      "patchApplied": "It was the best of times, it was the age of wisdom.",
+      "patchResults": [
+        true
+      ]
+    },
+    {
+      "name": "edit_cost_probe",
+      "text1": "abcxyzde",
+      "text2": "12wxyz34",
+      "applyTo": "abcxyzde",
+      "diff": [
+        [
+          -1,
+          "abc"
+        ],
+        [
+          1,
+          "12w"
+        ],
+        [
+          0,
+          "xyz"
+        ],
+        [
+          -1,
+          "de"
+        ],
+        [
+          1,
+          "34"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          -1,
+          "abc"
+        ],
+        [
+          1,
+          "12w"
+        ],
+        [
+          0,
+          "xyz"
+        ],
+        [
+          -1,
+          "de"
+        ],
+        [
+          1,
+          "34"
+        ]
+      ],
+      "delta": "-3\t+12w\t=3\t-2\t+34",
+      "patchText": "@@ -1,8 +1,8 @@\n-abc\n+12w\n xyz\n-de\n+34\n",
+      "patchApplied": "12wxyz34",
+      "patchResults": [
+        true
+      ]
+    },
+    {
+      "name": "linemode_long",
+      "text1": "alpha line one\nbeta line two\ngamma line three\ndelta line four\nepsilon line five\nzeta line six\neta line seven\ntheta line eight\n",
+      "text2": "alpha line one\nbeta line 2 changed\ngamma line three\ndelta line four\nnew line inserted here\nepsilon line five\nzeta line six\ntheta line eight\niota line nine\n",
+      "applyTo": "alpha line one\nbeta line two\ngamma line three\ndelta line four\nepsilon line five\nzeta line six\neta line seven\ntheta line eight\n",
+      "diff": [
+        [
+          0,
+          "alpha line one\nbeta line "
+        ],
+        [
+          -1,
+          "two"
+        ],
+        [
+          1,
+          "2 changed"
+        ],
+        [
+          0,
+          "\ngamma line three\ndelta line four\n"
+        ],
+        [
+          1,
+          "new line inserted here\n"
+        ],
+        [
+          0,
+          "epsilon line five\nzeta line six\n"
+        ],
+        [
+          1,
+          "th"
+        ],
+        [
+          0,
+          "eta line "
+        ],
+        [
+          -1,
+          "sev"
+        ],
+        [
+          0,
+          "e"
+        ],
+        [
+          -1,
+          "n\nt"
+        ],
+        [
+          1,
+          "ig"
+        ],
+        [
+          0,
+          "h"
+        ],
+        [
+          -1,
+          "e"
+        ],
+        [
+          1,
+          "t\nio"
+        ],
+        [
+          0,
+          "ta line "
+        ],
+        [
+          -1,
+          "e"
+        ],
+        [
+          1,
+          "n"
+        ],
+        [
+          0,
+          "i"
+        ],
+        [
+          -1,
+          "ght"
+        ],
+        [
+          1,
+          "ne"
+        ],
+        [
+          0,
+          "\n"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "alpha line one\nbeta line "
+        ],
+        [
+          -1,
+          "two"
+        ],
+        [
+          1,
+          "2 changed"
+        ],
+        [
+          0,
+          "\ngamma line three\ndelta line four\n"
+        ],
+        [
+          1,
+          "new line inserted here\n"
+        ],
+        [
+          0,
+          "epsilon line five\nzeta line six\n"
+        ],
+        [
+          1,
+          "th"
+        ],
+        [
+          0,
+          "eta line "
+        ],
+        [
+          -1,
+          "seven\nthe"
+        ],
+        [
+          1,
+          "eight\nio"
+        ],
+        [
+          0,
+          "ta line "
+        ],
+        [
+          -1,
+          "eight"
+        ],
+        [
+          1,
+          "nine"
+        ],
+        [
+          0,
+          "\n"
+        ]
+      ],
+      "delta": "=25\t-3\t+2 changed\t=34\t+new line inserted here%0A\t=32\t+th\t=9\t-3\t=1\t-3\t+ig\t=1\t-1\t+t%0Aio\t=8\t-1\t+n\t=1\t-3\t+ne\t=1",
+      "patchText": "@@ -22,11 +22,17 @@\n ine \n-two\n+2 changed\n %0Agam\n@@ -61,16 +61,39 @@\n ne four%0A\n+new line inserted here%0A\n epsilon \n@@ -116,16 +116,18 @@\n ine six%0A\n+th\n eta line\n@@ -131,27 +131,25 @@\n ine \n-seven%0Athe\n+eight%0Aio\n ta line \n-eight\n+nine\n %0A\n",
+      "patchApplied": "alpha line one\nbeta line 2 changed\ngamma line three\ndelta line four\nnew line inserted here\nepsilon line five\nzeta line six\ntheta line eight\niota line nine\n",
+      "patchResults": [
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "name": "containment",
+      "text1": "brown fox jumps",
+      "text2": "The quick brown fox jumps over the lazy dog",
+      "applyTo": "brown fox jumps",
+      "diff": [
+        [
+          1,
+          "The quick "
+        ],
+        [
+          0,
+          "brown fox jumps"
+        ],
+        [
+          1,
+          " over the lazy dog"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          1,
+          "The quick "
+        ],
+        [
+          0,
+          "brown fox jumps"
+        ],
+        [
+          1,
+          " over the lazy dog"
+        ]
+      ],
+      "delta": "+The quick \t=15\t+ over the lazy dog",
+      "patchText": "@@ -1,8 +1,18 @@\n+The quick \n brown fo\n@@ -18,8 +18,26 @@\n ox jumps\n+ over the lazy dog\n",
+      "patchApplied": "The quick brown fox jumps over the lazy dog",
+      "patchResults": [
+        true,
+        true
+      ]
+    },
+    {
+      "name": "splitmax_long",
+      "text1": "Start anchor text. AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFF. End anchor text.",
+      "text2": "Start anchor text. 111111111122222222223333333333444444444455555555556666666666777777. End anchor text.",
+      "applyTo": "Start anchor text. AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFF. End anchor text.",
+      "diff": [
+        [
+          0,
+          "Start anchor text. "
+        ],
+        [
+          -1,
+          "AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFF"
+        ],
+        [
+          1,
+          "111111111122222222223333333333444444444455555555556666666666777777"
+        ],
+        [
+          0,
+          ". End anchor text."
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "Start anchor text. "
+        ],
+        [
+          -1,
+          "AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFF"
+        ],
+        [
+          1,
+          "111111111122222222223333333333444444444455555555556666666666777777"
+        ],
+        [
+          0,
+          ". End anchor text."
+        ]
+      ],
+      "delta": "=19\t-60\t+111111111122222222223333333333444444444455555555556666666666777777\t=18",
+      "patchText": "@@ -16,68 +16,74 @@\n xt. \n-AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFF\n+111111111122222222223333333333444444444455555555556666666666777777\n . En\n",
+      "patchApplied": "Start anchor text. 111111111122222222223333333333444444444455555555556666666666777777. End anchor text.",
+      "patchResults": [
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "name": "fuzzy_apply",
+      "text1": "The quick brown fox jumps over the lazy dog.",
+      "text2": "The quick brown cat jumps over the sleepy dog.",
+      "applyTo": "PREFIX ADDED. The quick brown fox jumps over the lazy dog.",
+      "diff": [
+        [
+          0,
+          "The quick brown "
+        ],
+        [
+          -1,
+          "fox"
+        ],
+        [
+          1,
+          "cat"
+        ],
+        [
+          0,
+          " jumps over the "
+        ],
+        [
+          1,
+          "s"
+        ],
+        [
+          0,
+          "l"
+        ],
+        [
+          -1,
+          "az"
+        ],
+        [
+          1,
+          "eep"
+        ],
+        [
+          0,
+          "y dog."
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "The quick brown "
+        ],
+        [
+          -1,
+          "fox"
+        ],
+        [
+          1,
+          "cat"
+        ],
+        [
+          0,
+          " jumps over the "
+        ],
+        [
+          -1,
+          "laz"
+        ],
+        [
+          1,
+          "sleep"
+        ],
+        [
+          0,
+          "y dog."
+        ]
+      ],
+      "delta": "=16\t-3\t+cat\t=16\t+s\t=1\t-2\t+eep\t=6",
+      "patchText": "@@ -13,11 +13,11 @@\n own \n-fox\n+cat\n  jum\n@@ -32,11 +32,13 @@\n the \n-laz\n+sleep\n y do\n",
+      "patchApplied": "PREFIX ADDED. The quick brown cat jumps over the sleepy dog.",
+      "patchResults": [
+        true,
+        true
+      ]
+    },
+    {
+      "name": "tab_newline_insert",
+      "text1": "row:",
+      "text2": "row:\tcol1\tcol2\nrow2\tval",
+      "applyTo": "row:",
+      "diff": [
+        [
+          0,
+          "row:"
+        ],
+        [
+          1,
+          "\tcol1\tcol2\nrow2\tval"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "row:"
+        ],
+        [
+          1,
+          "\tcol1\tcol2\nrow2\tval"
+        ]
+      ],
+      "delta": "=4\t+%09col1%09col2%0Arow2%09val",
+      "patchText": "@@ -1,4 +1,23 @@\n row:\n+%09col1%09col2%0Arow2%09val\n",
+      "patchApplied": "row:\tcol1\tcol2\nrow2\tval",
+      "patchResults": [
+        true
+      ]
+    },
+    {
+      "name": "atat_in_text",
+      "text1": "keep a @@ b marker\nsecond line\n",
+      "text2": "keep a @@ B marker\nsecond line\nthird line\n",
+      "applyTo": "keep a @@ b marker\nsecond line\n",
+      "diff": [
+        [
+          0,
+          "keep a @@ "
+        ],
+        [
+          -1,
+          "b"
+        ],
+        [
+          1,
+          "B"
+        ],
+        [
+          0,
+          " marker\nsecond line\n"
+        ],
+        [
+          1,
+          "third line\n"
+        ]
+      ],
+      "diffSemantic": [
+        [
+          0,
+          "keep a @@ "
+        ],
+        [
+          -1,
+          "b"
+        ],
+        [
+          1,
+          "B"
+        ],
+        [
+          0,
+          " marker\nsecond line\n"
+        ],
+        [
+          1,
+          "third line\n"
+        ]
+      ],
+      "delta": "=10\t-1\t+B\t=20\t+third line%0A",
+      "patchText": "@@ -7,9 +7,9 @@\n  @@ \n-b\n+B\n  mar\n@@ -24,8 +24,19 @@\n nd line%0A\n+third line%0A\n",
+      "patchApplied": "keep a @@ B marker\nsecond line\nthird line\n",
+      "patchResults": [
+        true,
+        true
+      ]
+    }
+  ]
+}
