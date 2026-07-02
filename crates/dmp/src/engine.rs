@@ -71,21 +71,7 @@ pub(crate) fn common_overlap<T: Eq>(a: &[T], b: &[T]) -> usize {
     // failure-table rebuilds. A full occurrence of `b` inside `a` cannot
     // happen mid-scan: the windows have equal length and a == b returned
     // above, so the state peaks at the final position.
-    let mut table: Vec<usize> = vec![0];
-    let mut state = 0;
-    let mut i = 1;
-    while i < b.len() {
-        if b[i] == b[state] {
-            state += 1;
-            table.push(state);
-            i += 1;
-        } else if state == 0 {
-            table.push(0);
-            i += 1;
-        } else {
-            state = table[state - 1];
-        }
-    }
+    let mut kmp: Option<Kmp<T>> = None;
     let mut state = 0;
     let mut i = 0;
     while i < a.len() {
@@ -98,10 +84,56 @@ pub(crate) fn common_overlap<T: Eq>(a: &[T], b: &[T]) -> usize {
                 None => return 0,
             }
         } else {
-            state = table[state - 1];
+            state = kmp.get_or_insert_with(|| Kmp::new(b)).fail(state);
         }
     }
     state
+}
+
+/// Lazily-built KMP failure automaton. `fail(state)` returns the table entry
+/// for `state` (the length to fall back to on a mismatch), extending the
+/// table only as far as the highest state actually consulted — so a scan that
+/// never sustains a long partial match (common_overlap on unrelated prose
+/// ends, find_sub on non-repetitive text) builds a handful of entries instead
+/// of the whole O(m) table. Only constructed on the first state > 0 mismatch,
+/// so scans that never backtrack allocate nothing.
+struct Kmp<'a, T> {
+    needle: &'a [T],
+    /// table[k] = longest proper prefix of needle[..=k] that is also a suffix.
+    table: Vec<usize>,
+    /// Running prefix-function length and next index for incremental extension.
+    len: usize,
+    next: usize,
+}
+
+impl<'a, T: Eq> Kmp<'a, T> {
+    fn new(needle: &'a [T]) -> Self {
+        Kmp {
+            needle,
+            table: vec![0],
+            len: 0,
+            next: 1,
+        }
+    }
+
+    /// The failure value consulted on a mismatch at automaton `state` (> 0):
+    /// `table[state - 1]`, building the prefix function up to that index on
+    /// demand. Total build work across all calls is O(highest state reached).
+    fn fail(&mut self, state: usize) -> usize {
+        let k = state - 1;
+        while self.table.len() <= k {
+            let i = self.next;
+            while self.len > 0 && self.needle[i] != self.needle[self.len] {
+                self.len = self.table[self.len - 1];
+            }
+            if self.needle[i] == self.needle[self.len] {
+                self.len += 1;
+            }
+            self.table.push(self.len);
+            self.next += 1;
+        }
+        self.table[k]
+    }
 }
 
 /// First index of `needle` in `hay` at or after `from` (KMP), or None.
@@ -112,22 +144,7 @@ pub(crate) fn find_sub<T: Eq>(hay: &[T], needle: &[T], from: usize) -> Option<us
     if hay.is_empty() {
         return None;
     }
-    // Preprocess the pattern's failure table.
-    let mut table: Vec<usize> = vec![0];
-    let mut len = 0;
-    let mut i = 1;
-    while i < needle.len() {
-        if needle[i] == needle[len] {
-            len += 1;
-            table.push(len);
-            i += 1;
-        } else if len == 0 {
-            table.push(0);
-            i += 1;
-        } else {
-            len = table[len - 1];
-        }
-    }
+    let mut kmp: Option<Kmp<T>> = None;
     let mut i = from;
     let mut len = 0;
     while i < hay.len() {
@@ -146,8 +163,52 @@ pub(crate) fn find_sub<T: Eq>(hay: &[T], needle: &[T], from: usize) -> Option<us
                 None => return None,
             }
         } else {
-            len = table[len - 1];
+            len = kmp.get_or_insert_with(|| Kmp::new(needle)).fail(len);
         }
+    }
+    None
+}
+
+/// First index of `needle` in `hay`, or None — the same result as
+/// `find_sub(hay, needle, 0)`, but tuned for the diff containment check where
+/// `needle` (the shorter side) is often nearly as long as `hay` and shares no
+/// prefix or suffix with it.
+///
+/// It anchors on `needle[0]` with the chunked skip scan and verifies each
+/// candidate with the vectorized `common_prefix`, building no KMP automaton
+/// at all — the failure-table build dominated single-line re-diffs, because a
+/// large needle drove a large table at every recursion level. A comparison
+/// budget caps the verify work; a periodic needle that keeps matching deeply
+/// exhausts it and falls back to KMP `find_sub`, so the worst case stays
+/// O(n + m) (the naive windowed search dmp-rs uses here has no such guard and
+/// is ~5× slower on the repetitive/periodic shape).
+pub(crate) fn contains<T: Eq>(hay: &[T], needle: &[T]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if needle.len() > hay.len() {
+        return None;
+    }
+    let last_start = hay.len() - needle.len();
+    // Verify-char budget: total prefix-compare work before conceding the
+    // needle is periodic enough to want KMP. The monotonic skip scan is O(n)
+    // on its own and not charged here.
+    let mut budget: i64 = (hay.len() + needle.len()) as i64;
+    let mut i = 0;
+    while i <= last_start {
+        let j = match skip_to(hay, i, &needle[0]) {
+            Some(j) if j <= last_start => j,
+            _ => return None,
+        };
+        let matched = common_prefix(&hay[j..], needle);
+        if matched == needle.len() {
+            return Some(j);
+        }
+        budget -= matched as i64 + 1;
+        if budget < 0 {
+            return find_sub(hay, needle, 0);
+        }
+        i = j + 1;
     }
     None
 }
@@ -162,21 +223,7 @@ pub(crate) fn rfind_sub<T: Eq>(hay: &[T], needle: &[T], until: usize) -> Option<
     if hay.is_empty() {
         return None;
     }
-    let mut table: Vec<usize> = vec![0];
-    let mut len = 0;
-    let mut i = 1;
-    while i < needle.len() {
-        if needle[i] == needle[len] {
-            len += 1;
-            table.push(len);
-            i += 1;
-        } else if len == 0 {
-            table.push(0);
-            i += 1;
-        } else {
-            len = table[len - 1];
-        }
-    }
+    let mut kmp: Option<Kmp<T>> = None;
     let mut i = 0;
     let mut len = 0;
     let mut last: Option<usize> = None;
@@ -186,7 +233,7 @@ pub(crate) fn rfind_sub<T: Eq>(hay: &[T], needle: &[T], until: usize) -> Option<
             i += 1;
             if len == needle.len() {
                 last = Some(i - len);
-                len = table[len - 1];
+                len = kmp.get_or_insert_with(|| Kmp::new(needle)).fail(len);
             }
         } else if len == 0 {
             // As in find_sub: jump to the next possible start. No further
@@ -197,7 +244,7 @@ pub(crate) fn rfind_sub<T: Eq>(hay: &[T], needle: &[T], until: usize) -> Option<
                 None => return last,
             }
         } else {
-            len = table[len - 1];
+            len = kmp.get_or_insert_with(|| Kmp::new(needle)).fail(len);
         }
     }
     last
@@ -360,26 +407,13 @@ fn half_match_at<T: Eq>(long: &[T], short: &[T], i: usize) -> Option<(usize, usi
     let mut best_common = 0;
     let mut best = (0, 0);
 
-    // One KMP pass over `short` (failure table built once) visits every seed
-    // occurrence in ascending order — the same visits as restarting find_sub
-    // at jv + 1, without rebuilding the table per occurrence. On repetitive
-    // text the seed recurs every period, so this is what keeps the deadline
-    // path from degenerating.
-    let mut table: Vec<usize> = vec![0];
-    let mut len = 0;
-    let mut k = 1;
-    while k < seed.len() {
-        if seed[k] == seed[len] {
-            len += 1;
-            table.push(len);
-            k += 1;
-        } else if len == 0 {
-            table.push(0);
-            k += 1;
-        } else {
-            len = table[len - 1];
-        }
-    }
+    // One KMP pass over `short` visits every seed occurrence in ascending
+    // order — the same visits as restarting find_sub at jv + 1, without
+    // rebuilding the table per occurrence. On repetitive text the seed recurs
+    // every period, so this is what keeps the deadline path from degenerating.
+    // Every occurrence reaches the full seed length, so the lazy table fills
+    // to seed.len() here rather than staying short.
+    let mut kmp = Kmp::new(seed);
     let mut pos = 0;
     let mut len = 0;
     while pos < short.len() {
@@ -401,12 +435,12 @@ fn half_match_at<T: Eq>(long: &[T], short: &[T], i: usize) -> Option<(usize, usi
                         best = (i - suffix, jv - suffix);
                     }
                 }
-                len = table[len - 1];
+                len = kmp.fail(len);
             }
         } else if len == 0 {
             pos += 1;
         } else {
-            len = table[len - 1];
+            len = kmp.fail(len);
         }
     }
     if best_common * 2 >= long.len() {
@@ -416,25 +450,59 @@ fn half_match_at<T: Eq>(long: &[T], short: &[T], i: usize) -> Option<(usize, usi
     }
 }
 
+/// Extend a forward snake: match old[x]/new[y] ascending until the tokens
+/// differ. The loop conditions are the bounds proofs, so the indexing
+/// compiles check-free — keep this a plain scalar loop (chunked variants
+/// measured slower here, in dmp-rs, and in this crate's own abandoned
+/// restructure).
+#[inline]
+fn snake_fwd<T: Eq>(old: &[T], new: &[T], mut x: usize, mut y: usize) -> (usize, usize) {
+    while x < old.len() && y < new.len() && old[x] == new[y] {
+        x += 1;
+        y += 1;
+    }
+    (x, y)
+}
+
+/// Extend a reverse snake: match from the tails, old[len-1-x]/new[len-1-y].
+/// x < len bounds len-1-x, so the indexing compiles check-free.
+#[inline]
+fn snake_rev<T: Eq>(old: &[T], new: &[T], mut x: usize, mut y: usize) -> (usize, usize) {
+    while x < old.len() && y < new.len() && old[old.len() - 1 - x] == new[new.len() - 1 - y] {
+        x += 1;
+        y += 1;
+    }
+    (x, y)
+}
+
 /// DMP diff_bisect middle-snake search. Returns the split point (x, y) where
 /// the forward and reverse d-paths overlap, or None when the inputs share no
 /// overlap (or the deadline expired) and the caller should emit delete+insert.
 ///
-/// Faithful port including the negative-index wrap guards: the k-walk can
-/// probe with x or y at -1, and the original (Python-derived) indexing wraps
-/// from the end of the slice in that case.
+/// The classic ports guard the snake walks against negative x/y (Python's
+/// arr[-1] wraps from the end), but the Myers invariants make that
+/// unreachable: every stored v entry is a prior walk endpoint with x >= 0
+/// and y = x - k >= 0, and the seed is 0. The walks therefore index usize
+/// slices directly (snake_fwd/snake_rev), with the invariant pinned by
+/// debug_asserts; the old guarded form spent ~18% of a bisect-bound profile
+/// in bounds-check machinery. v entries stay i32 to halve the working set.
 pub(crate) fn bisect<T: Eq>(
     old: &[T],
     new: &[T],
     deadline: Option<Instant>,
+    scratch: &mut Vec<i32>,
 ) -> Option<(usize, usize)> {
     let text1_length = old.len() as i32;
     let text2_length = new.len() as i32;
     let max_d: i32 = (text1_length + text2_length + 1) / 2;
     let v_offset: i32 = max_d;
     let v_length: i32 = 2 * max_d;
-    let mut v1: Vec<i32> = vec![-1; v_length as usize];
-    let mut v2: Vec<i32> = vec![-1; v_length as usize];
+    // The caller-provided scratch backs both k-line arrays: recursion and
+    // rediff loops reuse one allocation (children are never larger, so after
+    // the first call this is a pure memset).
+    scratch.clear();
+    scratch.resize(2 * v_length as usize, -1);
+    let (v1, v2) = scratch.split_at_mut(v_length as usize);
     v1[v_offset as usize + 1] = 0;
     v2[v_offset as usize + 1] = 0;
     let delta: i32 = text1_length - text2_length;
@@ -455,40 +523,52 @@ pub(crate) fn bisect<T: Eq>(
         }
 
         // Walk the front path one step.
+        //
+        // The v accesses go through guarded get/get_mut rather than indexing:
+        // every offset is provably in range (debug_asserted), but the
+        // optimizer can't see that, and the panic plumbing of checked
+        // indexing costs measurably at ~one access per k-step. The -1 arm of
+        // each read is dead; the k1 == d short-circuit in the branch
+        // selection keeps the +1 read's value unused exactly where the old
+        // indexed form would have been out of bounds.
         let mut k1 = -d + k1start;
         while k1 < d + 1 - k1end {
-            let k1_offset = v_offset + k1;
-            let mut x1: i32;
-            if k1 == -d || (k1 != d && v1[k1_offset as usize - 1] < v1[k1_offset as usize + 1]) {
-                x1 = v1[k1_offset as usize + 1];
+            let k1_offset = (v_offset + k1) as usize;
+            debug_assert!(k1_offset >= 1 && k1_offset < v_length as usize);
+            let v1_prev = v1.get(k1_offset - 1).copied().unwrap_or(-1);
+            let v1_next = v1.get(k1_offset + 1).copied().unwrap_or(-1);
+            let x_start = if k1 == -d || (k1 != d && v1_prev < v1_next) {
+                v1_next
             } else {
-                x1 = v1[k1_offset as usize - 1] + 1;
+                v1_prev + 1
+            };
+            let y_start = x_start - k1;
+            debug_assert!(
+                x_start >= 0 && y_start >= 0,
+                "fwd walk start ({x_start},{y_start})"
+            );
+            let (x1, y1) = snake_fwd(old, new, x_start as usize, y_start as usize);
+            if let Some(cell) = v1.get_mut(k1_offset) {
+                *cell = x1 as i32;
             }
-            let mut y1 = x1 - k1;
-            while x1 < text1_length && y1 < text2_length {
-                let i1 = if x1 < 0 { text1_length + x1 } else { x1 };
-                let i2 = if y1 < 0 { text2_length + y1 } else { y1 };
-                if old[i1 as usize] != new[i2 as usize] {
-                    break;
-                }
-                x1 += 1;
-                y1 += 1;
-            }
-            v1[k1_offset as usize] = x1;
-            if x1 > text1_length {
+            if x1 > old.len() {
                 // Ran off the right of the graph.
                 k1end += 2;
-            } else if y1 > text2_length {
+            } else if y1 > new.len() {
                 // Ran off the bottom of the graph.
                 k1start += 2;
             } else if front {
                 let k2_offset = v_offset + delta - k1;
-                if k2_offset >= 0 && k2_offset < v_length && v2[k2_offset as usize] != -1 {
-                    // Mirror x2 onto top-left coordinate system.
-                    let x2 = text1_length - v2[k2_offset as usize];
-                    if x1 >= x2 {
-                        // Overlap detected.
-                        return Some((x1 as usize, y1 as usize));
+                if k2_offset >= 0 {
+                    if let Some(&v2k) = v2.get(k2_offset as usize) {
+                        if v2k != -1 {
+                            // Mirror x2 onto top-left coordinate system.
+                            let x2 = text1_length - v2k;
+                            if x1 as i32 >= x2 {
+                                // Overlap detected.
+                                return Some((x1, y1));
+                            }
+                        }
                     }
                 }
             }
@@ -498,48 +578,42 @@ pub(crate) fn bisect<T: Eq>(
         // Walk the reverse path one step.
         let mut k2 = -d + k2start;
         while k2 < d + 1 - k2end {
-            let k2_offset = v_offset + k2;
-            let mut x2: i32;
-            if k2 == -d || (k2 != d && v2[k2_offset as usize - 1] < v2[k2_offset as usize + 1]) {
-                x2 = v2[k2_offset as usize + 1];
+            let k2_offset = (v_offset + k2) as usize;
+            debug_assert!(k2_offset >= 1 && k2_offset < v_length as usize);
+            let v2_prev = v2.get(k2_offset - 1).copied().unwrap_or(-1);
+            let v2_next = v2.get(k2_offset + 1).copied().unwrap_or(-1);
+            let x_start = if k2 == -d || (k2 != d && v2_prev < v2_next) {
+                v2_next
             } else {
-                x2 = v2[k2_offset as usize - 1] + 1;
+                v2_prev + 1
+            };
+            let y_start = x_start - k2;
+            debug_assert!(
+                x_start >= 0 && y_start >= 0,
+                "rev walk start ({x_start},{y_start})"
+            );
+            let (x2, y2) = snake_rev(old, new, x_start as usize, y_start as usize);
+            if let Some(cell) = v2.get_mut(k2_offset) {
+                *cell = x2 as i32;
             }
-            let mut y2 = x2 - k2;
-            while x2 < text1_length && y2 < text2_length {
-                let i1 = if text1_length - x2 > 0 {
-                    text1_length - x2 - 1
-                } else {
-                    x2 + 1
-                };
-                let i2 = if text2_length - y2 > 0 {
-                    text2_length - y2 - 1
-                } else {
-                    y2 + 1
-                };
-                if old[i1 as usize] != new[i2 as usize] {
-                    break;
-                }
-                x2 += 1;
-                y2 += 1;
-            }
-            v2[k2_offset as usize] = x2;
-            if x2 > text1_length {
+            if x2 > old.len() {
                 // Ran off the left of the graph.
                 k2end += 2;
-            } else if y2 > text2_length {
+            } else if y2 > new.len() {
                 // Ran off the top of the graph.
                 k2start += 2;
             } else if !front {
                 let k1_offset = v_offset + delta - k2;
-                if k1_offset >= 0 && k1_offset < v_length && v1[k1_offset as usize] != -1 {
-                    let x1 = v1[k1_offset as usize];
-                    let y1 = v_offset + x1 - k1_offset;
-                    // Mirror x2 onto top-left coordinate system.
-                    let x2 = text1_length - x2;
-                    if x1 >= x2 {
-                        // Overlap detected.
-                        return Some((x1 as usize, y1 as usize));
+                if k1_offset >= 0 {
+                    if let Some(&v1k) = v1.get(k1_offset as usize) {
+                        if v1k != -1 {
+                            let y1 = v_offset + v1k - k1_offset;
+                            // Mirror x2 onto top-left coordinate system.
+                            if v1k >= text1_length - x2 as i32 {
+                                // Overlap detected.
+                                return Some((v1k as usize, y1 as usize));
+                            }
+                        }
                     }
                 }
             }
@@ -643,11 +717,59 @@ mod tests {
     fn bisect_over_bytes() {
         // "cat" vs "map": the reverse d=2 walk detects overlap at (2, 2)
         // (hand-traced against the pre-rewrite implementation).
-        assert_eq!(bisect(b"cat", b"map", None), Some((2, 2)));
+        let mut scratch = Vec::new();
+        assert_eq!(bisect(b"cat", b"map", None, &mut scratch), Some((2, 2)));
         // No shared tokens at all: no overlap to split on.
-        assert_eq!(bisect(b"abc", b"xyz", None), None);
+        assert_eq!(bisect(b"abc", b"xyz", None, &mut scratch), None);
         // Expired deadline: give up immediately.
         let past = Instant::now() - std::time::Duration::from_secs(1);
-        assert_eq!(bisect(b"cat", b"map", Some(past)), None);
+        assert_eq!(bisect(b"cat", b"map", Some(past), &mut scratch), None);
+    }
+
+    #[test]
+    fn snake_walks() {
+        // Forward: extends the match run from (x, y), stops at the mismatch.
+        assert_eq!(snake_fwd(b"abcX", b"abcY", 0, 0), (3, 3));
+        assert_eq!(snake_fwd(b"abc", b"abc", 1, 1), (3, 3));
+        // Offsets are per-side: old[2..] vs new[0..].
+        assert_eq!(snake_fwd(b"xxab", b"abyy", 2, 0), (4, 2));
+        // Start at/past an end: nothing to extend.
+        assert_eq!(snake_fwd(b"ab", b"ab", 2, 2), (2, 2));
+        assert_eq!(snake_fwd(b"ab", b"ab", 3, 3), (3, 3));
+
+        // Reverse: x/y count matched tokens from the tails
+        // (old[len-1-x] vs new[len-1-y]).
+        assert_eq!(snake_rev(b"Xabc", b"Yabc", 0, 0), (3, 3));
+        assert_eq!(snake_rev(b"abcd", b"cd", 0, 0), (2, 2));
+        assert_eq!(snake_rev(b"ab", b"ab", 2, 2), (2, 2));
+    }
+
+    #[test]
+    fn contains_matches_find_sub() {
+        // `contains` must return the exact same first-occurrence index as
+        // `find_sub(.., .., 0)` on every shape — the diff output depends on
+        // it matching the reference's `indexOf`.
+        let cases: &[(&[u8], &[u8])] = &[
+            (b"", b""),
+            (b"abc", b""),
+            (b"abcdef", b"cd"),        // interior hit
+            (b"abcdef", b"abc"),       // prefix hit
+            (b"abcdef", b"def"),       // suffix hit
+            (b"abcdef", b"xyz"),       // no hit
+            (b"abcdef", b"abcdefg"),   // needle longer than hay
+            (b"XabcY", b"abc"),        // hit after a mismatch at 0
+            (b"aaaab", b"aab"),        // repeated first token
+            (b"abababab", b"ababab"),  // periodic near-equal: budget-fallback path
+            (b"abababab", b"babab"),   // periodic, offset-1 hit
+            (b"aaaaaaaa", b"aaaaaaa"), // fully periodic, prefix hit at 0
+            (b"aaaaaaab", b"aaaab"),   // periodic tail, no full hit
+        ];
+        for &(hay, needle) in cases {
+            assert_eq!(
+                contains(hay, needle),
+                find_sub(hay, needle, 0),
+                "contains disagrees with find_sub on hay={hay:?} needle={needle:?}"
+            );
+        }
     }
 }

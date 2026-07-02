@@ -1,7 +1,7 @@
 // Tokenization: packing lines and words into one placeholder char per unique
 // token so the char-based diff core can operate on coarser granularities.
 
-use crate::types::{find_char, Diff, Dmp};
+use crate::types::{find_char, Diff, DiffToken, Dmp, TDiff};
 use core::char;
 use std::collections::HashMap;
 
@@ -243,31 +243,49 @@ fn slot_to_id(slot: usize) -> u32 {
     }
 }
 
+/// True when `munge_arena` would pack `text` into a single line token: lines
+/// carry their trailing '\n', so that means the only '\n', if any, is the
+/// final char. Lets line mode skip the packing for one-line inputs, whose
+/// packed diff is deterministically one delete plus one insert.
+pub(crate) fn packs_to_one_line<T: DiffToken>(text: &[T]) -> bool {
+    match crate::engine::skip_to(text, 0, &T::NEWLINE) {
+        None => true,
+        Some(i) => i + 1 == text.len(),
+    }
+}
+
 /// Pack both texts into one placeholder char per unique line (the slice core
 /// behind `diff_lines_tochars`, shared with line mode so it can pass slices
 /// without copying its inputs).
-pub(crate) fn lines_tochars_arena(text1: &[char], text2: &[char]) -> (String, String, LineArena) {
+pub(crate) fn lines_tochars_arena<T: DiffToken>(
+    text1: &[T],
+    text2: &[T],
+) -> (String, String, LineArena) {
     let mut store = LineArena::new();
     let chars1 = munge_arena(text1, &mut store);
     let chars2 = munge_arena(text2, &mut store);
     (chars1, chars2, store)
 }
 
-fn munge_arena(text: &[char], store: &mut LineArena) -> String {
+fn munge_arena<T: DiffToken>(text: &[T], store: &mut LineArena) -> String {
     let mut chars = "".to_string();
     // Walk the text, pulling out a substring for each line.
     let mut line_start = 0;
     let mut line_end = -1;
     while line_end < (text.len() as i32 - 1) {
-        line_end = find_char('\n', text, line_start as usize);
+        line_end = match crate::engine::skip_to(text, line_start as usize, &T::NEWLINE) {
+            Some(i) => i as i32,
+            None => -1,
+        };
         if line_end == -1 {
             line_end = text.len() as i32 - 1;
         }
         // Encode the line straight into the arena tip; a hit rolls it back.
         let start = store.arena.len();
-        store
-            .arena
-            .extend(text[line_start as usize..=line_end as usize].iter());
+        T::append_to_arena(
+            &text[line_start as usize..=line_end as usize],
+            &mut store.arena,
+        );
         let mut h = fx_hash_bytes(&store.arena.as_bytes()[start..]);
         match store.find_tip(start, h) {
             Some(slot) => {
@@ -290,7 +308,7 @@ fn munge_arena(text: &[char], store: &mut LineArena) -> String {
                 // 1114111 is the biggest unicode scalar, so stop here
                 if u32char == 1114111 {
                     store.arena.truncate(start);
-                    store.arena.extend(text[(line_start as usize)..].iter());
+                    T::append_to_arena(&text[(line_start as usize)..], &mut store.arena);
                     line_end = text.len() as i32 - 1;
                     h = fx_hash_bytes(&store.arena.as_bytes()[start..]);
                 }
@@ -309,18 +327,21 @@ fn munge_arena(text: &[char], store: &mut LineArena) -> String {
 /// Word-packing counterpart of `lines_tochars_arena`, for the opt-in word
 /// mode: words are maximal non-whitespace runs and every whitespace char is
 /// its own token — the public word munge's regex-\s semantics.
-pub(crate) fn words_tochars_arena(text1: &[char], text2: &[char]) -> (String, String, LineArena) {
+pub(crate) fn words_tochars_arena<T: DiffToken>(
+    text1: &[T],
+    text2: &[T],
+) -> (String, String, LineArena) {
     let mut store = LineArena::new();
     let chars1 = munge_words_arena(text1, &mut store);
     let chars2 = munge_words_arena(text2, &mut store);
     (chars1, chars2, store)
 }
 
-fn munge_words_arena(text: &[char], store: &mut LineArena) -> String {
+fn munge_words_arena<T: DiffToken>(text: &[T], store: &mut LineArena) -> String {
     let mut chars = "".to_string();
     let mut word_start: Option<usize> = None;
     for i in 0..text.len() {
-        if text[i].is_whitespace() {
+        if text[i].is_word_sep() {
             if let Some(start) = word_start.take() {
                 if !push_word_token(store, &mut chars, text, start, i) {
                     return chars;
@@ -342,15 +363,15 @@ fn munge_words_arena(text: &[char], store: &mut LineArena) -> String {
 /// Intern `text[from..to]` and append its placeholder char. When the id
 /// space is exhausted the token swallows the rest of the text (the same
 /// escape hatch as the line packer) and returns false to stop the walk.
-fn push_word_token(
+fn push_word_token<T: DiffToken>(
     store: &mut LineArena,
     chars: &mut String,
-    text: &[char],
+    text: &[T],
     from: usize,
     to: usize,
 ) -> bool {
     let start = store.arena.len();
-    store.arena.extend(text[from..to].iter());
+    T::append_to_arena(&text[from..to], &mut store.arena);
     let mut h = fx_hash_bytes(&store.arena.as_bytes()[start..]);
     if let Some(slot) = store.find_tip(start, h) {
         store.arena.truncate(start);
@@ -367,7 +388,7 @@ fn push_word_token(
     // 1114111 is the biggest unicode scalar, so stop here
     if u32char == 1114111 {
         store.arena.truncate(start);
-        store.arena.extend(text[from..].iter());
+        T::append_to_arena(&text[from..], &mut store.arena);
         h = fx_hash_bytes(&store.arena.as_bytes()[start..]);
         exhausted = true;
     }
@@ -378,21 +399,23 @@ fn push_word_token(
 }
 
 /// Rehydrate line-packed diffs from the arena — the internal counterpart of
-/// `diff_chars_tolines`, indexing spans by raw char value exactly as the
-/// public path indexes its linearray.
-pub(crate) fn chars_tolines_arena(diffs: &mut [Diff], store: &LineArena) {
+/// `diff_chars_tolines`, indexing spans by raw placeholder value exactly as
+/// the public path indexes its linearray. Each placeholder token expands to
+/// its line's real chars in place, so the piece stays a `Vec<char>` run with
+/// no intermediate `String`.
+pub(crate) fn chars_tolines_arena(diffs: &mut [TDiff], store: &LineArena) {
     for diff in diffs.iter_mut() {
         let mut total = 0;
-        for ch in diff.text.chars() {
+        for &ch in &diff.data {
             let (s, e) = store.spans[ch as usize];
             total += e - s;
         }
-        let mut text = String::with_capacity(total);
-        for ch in diff.text.chars() {
+        let mut data: Vec<char> = Vec::with_capacity(total);
+        for &ch in &diff.data {
             let (s, e) = store.spans[ch as usize];
-            text.push_str(&store.arena[s..e]);
+            data.extend(store.arena[s..e].chars());
         }
-        diff.text = text;
+        diff.data = data;
     }
 }
 
@@ -530,6 +553,47 @@ impl GraphemePacker {
     pub fn unpack_diffs(&self, diffs: &mut [Diff]) {
         for diff in diffs {
             diff.text = self.unpack(&diff.text);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packs_to_one_line_agrees_with_the_arena() {
+        // The single-line shortcut in line mode is only sound if this
+        // predicate matches what munge_arena actually does.
+        let cases: &[&str] = &[
+            "no newline at all",
+            "trailing newline\n",
+            "mid\nsplit",
+            "leading\nnewline",
+            "\n",
+            "\n\n",
+            "two\nlines\n",
+            "a",
+        ];
+        for t1 in cases {
+            for t2 in cases {
+                if t1 == t2 {
+                    continue;
+                }
+                let c1: Vec<char> = t1.chars().collect();
+                let c2: Vec<char> = t2.chars().collect();
+                let (p1, p2, _) = lines_tochars_arena(&c1, &c2);
+                assert_eq!(
+                    packs_to_one_line(&c1),
+                    p1.chars().count() == 1,
+                    "{t1:?} vs arena packing {p1:?}"
+                );
+                assert_eq!(
+                    packs_to_one_line(&c2),
+                    p2.chars().count() == 1,
+                    "{t2:?} vs arena packing {p2:?}"
+                );
+            }
         }
     }
 }

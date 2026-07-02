@@ -1,6 +1,9 @@
 # diff-match-patch for Rust
 
-A Rust port of Neil Fraser's diff-match-patch.
+A fast, heavily optimized Rust port of Neil Fraser's diff-match-patch. The
+internals are reworked for performance — slice-based diffing, arena-interned
+tokens, in-place patching, an ASCII fast path — while every result stays
+byte-identical to the reference (see [Performance](#performance)).
 
 It does three things:
 
@@ -121,6 +124,71 @@ diffs carries no patch or match code.
 Configuration lives on `Dmp` as plain fields: `diff_timeout`, `edit_cost`,
 `match_threshold`, `match_distance`, `patch_margin`, `match_maxbits`,
 `patch_delete_threshold`, `segmentation`, `word_mode`.
+
+## Performance
+
+Criterion medians on an i9-12900HK (default `bench` profile). Datasets are
+defined in [`crates/dmp-bench/`](crates/dmp-bench/); reproduce with
+`cargo bench -p dmp-bench`.
+
+**Diff**
+
+| Scenario | Time |
+|---|---|
+| Identical text, 100 KB | 3.6 µs |
+| One small edit, 50 KB | 41 µs |
+| Append / prepend, 50 KB | 43 / 44 µs |
+| Block moved / deleted, 60 KB | 195 / 50 µs |
+| Scattered word edits, 50 KB | 335 µs |
+| HTML price churn, 90 KB | 463 µs |
+| CJK scattered edits, 60 KB | 298 µs |
+| Single-line document, 16 KB | 208 µs |
+| Many small edits, 22 KB | 3.5 ms |
+| All-unique lines, 180 KB | 4.1 ms |
+| Rename touching every line, 18 KB | 263 ms |
+| — same, with `word_mode` | 7.7 ms |
+| Highly repetitive, 16 KB | 210 µs |
+| Disjoint alphabets, 2 K tokens | 8.7 ms |
+| Random bytes, 4 K | 11.9 ms |
+
+**Patch, match, and cleanup**
+
+| Scenario | Time |
+|---|---|
+| Build patches, scattered 50 KB | 1.7 ms |
+| Apply patches, clean 50 KB | 93 µs |
+| Apply patches, target shifted | 2.7 ms |
+| Apply patches, contexts fuzzed | 906 µs |
+| Fuzzy match, 50 KB | 128 µs |
+| Near-exact match, 50 KB | 117 µs |
+| Semantic cleanup, scattered | 107 µs |
+| Merge cleanup, 1500 runs | 308 µs |
+
+### How
+
+Every optimization is output-byte-identical to the reference (oracle +
+characterization suites) except the opt-in `word_mode`. The main levers:
+
+- **Slice-based core.** The diff recursion runs on `&[char]` — or `&[u8]` when
+  both inputs are ASCII, a byte-identical fast path — and materializes a
+  `String` only when emitting a chunk. Patches splice a single `Vec<char>` in
+  place rather than rebuilding the document per patch.
+- **Interned tokens.** Lines and words pack into one arena (`LineArena`: byte
+  spans + hash buckets, no per-line `String`); diff chunks and all four cleanup
+  passes carry char-run tokens and encode to UTF-8 exactly once, at the end.
+- **Substring search.** Chunked, SIMD-friendly skip scans; skip-and-verify with
+  a budget-bounded KMP fallback for the containment check; lazily built,
+  incrementally grown KMP failure tables; a one-pass common-overlap; rarest-
+  token anchoring for uniqueness scans.
+- **Bisect.** Check-free `usize` snake walks whose loop conditions are the
+  bounds proofs; guarded (non-panicking) score-array access; one scratch buffer
+  reused across the whole recursion.
+- **Cleanup.** A forward-fold merge (no quadratic insert/remove shifting); the
+  lossless-slide pass moves split indices over a shared buffer.
+- **Opt-in `word_mode`** diffs rename-shaped documents at word granularity
+  first, then rediffs only the changed words.
+
+The full per-commit list is in [`crates/dmp/PERF.md`](crates/dmp/PERF.md).
 
 ## Compatibility notes
 

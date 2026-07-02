@@ -142,6 +142,74 @@ pub(crate) fn find_char(cha: char, text: &[char], start: usize) -> i32 {
     }
 }
 
+/// Token space for the internal diff recursion. The general path runs on
+/// chars; when both inputs are ASCII the dispatcher runs the same recursion
+/// on bytes instead — a bijection there, so every comparison, index, and
+/// length matches and the output is byte-identical, while the text is used
+/// zero-copy (no `Vec<char>` materialization, no UTF-8 encode/decode in the
+/// line arena, and a quarter of the memory traffic in bisect).
+pub(crate) trait DiffToken: Copy + Eq {
+    const NEWLINE: Self;
+    /// Widen a token run to `char`s: the diff pieces are carried as
+    /// `TDiff { data: Vec<char> }` through the cleanup passes so text is
+    /// encoded to UTF-8 exactly once, at the final `materialize`. On the u8
+    /// (ASCII) recursion this is a byte→char widen; on char it is a copy.
+    fn to_tokens(tokens: &[Self]) -> Vec<char>;
+    /// Append a token run to the line arena (always UTF-8).
+    fn append_to_arena(tokens: &[Self], arena: &mut String);
+    /// Word-mode separator, matching `char::is_whitespace` (which on ASCII
+    /// is exactly {\t, \n, VT, FF, \r, space} — note `u8::is_ascii_whitespace`
+    /// omits VT, so the byte impl cannot delegate to it).
+    fn is_word_sep(self) -> bool;
+}
+
+impl DiffToken for char {
+    const NEWLINE: Self = '\n';
+    fn to_tokens(tokens: &[char]) -> Vec<char> {
+        tokens.to_vec()
+    }
+    fn append_to_arena(tokens: &[char], arena: &mut String) {
+        arena.extend(tokens.iter());
+    }
+    fn is_word_sep(self) -> bool {
+        self.is_whitespace()
+    }
+}
+
+impl DiffToken for u8 {
+    const NEWLINE: Self = b'\n';
+    fn to_tokens(tokens: &[u8]) -> Vec<char> {
+        tokens.iter().map(|&b| b as char).collect()
+    }
+    fn append_to_arena(tokens: &[u8], arena: &mut String) {
+        arena.push_str(std::str::from_utf8(tokens).expect("ascii fast path"));
+    }
+    fn is_word_sep(self) -> bool {
+        matches!(self, b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' ')
+    }
+}
+
+/// Internal token-carrying diff piece. The recursion and every cleanup pass
+/// operate on these — text stays as a `Vec<char>` run so the redundant
+/// UTF-8 encode/decode round-trips that dominated the char-path profiles are
+/// gone; the public `Diff` (owned `String`) is built once, at `materialize`.
+pub(crate) struct TDiff {
+    pub operation: i32,
+    pub data: Vec<char>,
+}
+
+impl TDiff {
+    pub(crate) fn new(operation: i32, data: Vec<char>) -> TDiff {
+        TDiff { operation, data }
+    }
+
+    /// One equal/delete/insert piece as public `Diff` text (the single
+    /// UTF-8 encode point).
+    pub(crate) fn into_diff(self) -> Diff {
+        Diff::new(self.operation, self.data.iter().collect())
+    }
+}
+
 impl fmt::Debug for Diff {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "\n  {{ {}: {} }}", self.operation, self.text)
