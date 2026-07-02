@@ -1,0 +1,25 @@
+# Perf tooling for diff_match_patch: the criterion suite (benches/dmp.rs) and
+# a pprof sampling harness (src/bin/profile.rs) that share one set of
+# deterministic dataset generators (src/lib.rs). Internal tooling: never
+# published.
+[package]
+name = "dmp-bench"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+bench = false
+
+[[bench]]
+name = "dmp"
+harness = false
+
+[dependencies]
+diff_match_patch = { path = "../dmp" }
+# pprof is a regular dependency (not dev-) because the profile *bin* needs it.
+pprof = { version = "0.15", features = ["flamegraph"] }
+
+[dev-dependencies]
+criterion = "0.8.2"

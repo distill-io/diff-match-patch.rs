@@ -8,7 +8,9 @@ It does three things:
 - **Match**: find a pattern in text, even a fuzzy one.
 - **Patch**: turn diffs into patches, and apply them — even when the target text has drifted.
 
-The crate lives in [`diff_match_patch/`](diff_match_patch/).
+The crate lives in [`crates/dmp/`](crates/dmp/); perf tooling (criterion
+benches and a profiling harness) lives in
+[`crates/dmp-bench/`](crates/dmp-bench/).
 
 ## Diff
 
@@ -37,6 +39,16 @@ Need a cap on diff time? Set a timeout in seconds:
 
 ```rust
 dmp.diff_timeout = Some(1.0); // give up refining after 1 second
+```
+
+Diffing documents where nearly every line changes a little (renames,
+reformatting)? Opt into word mode — large edit blocks are diffed word-by-word
+first, which can be orders of magnitude faster. The result is still a valid
+diff, but edit boundaries snap to word boundaries, so the output is not
+byte-identical to the reference implementation's (hence off by default):
+
+```rust
+dmp.word_mode = true;
 ```
 
 ## Patch
@@ -108,7 +120,7 @@ diffs carries no patch or match code.
 
 Configuration lives on `Dmp` as plain fields: `diff_timeout`, `edit_cost`,
 `match_threshold`, `match_distance`, `patch_margin`, `match_maxbits`,
-`patch_delete_threshold`, `segmentation`.
+`patch_delete_threshold`, `segmentation`, `word_mode`.
 
 ## Compatibility notes
 
@@ -124,7 +136,13 @@ Configuration lives on `Dmp` as plain fields: `diff_timeout`, `edit_cost`,
 - `cargo test` runs everything: canonical vectors, a golden corpus generated
   from the vendored reference implementation, characterization pins, and
   property tests. `cargo test --no-default-features` covers the char-only build.
-- The golden corpus (`diff_match_patch/tests/golden/corpus.json`) comes from
-  the vendored oracle (`diff_match_patch/oracle/vendor/`, Apache-2.0).
-  Regenerate it with `node oracle/generate.mjs`. CI fails if the checked-in
-  corpus drifts from what the oracle produces.
+- The golden corpus (`crates/dmp/tests/golden/corpus.json`) comes from the
+  vendored oracle (`crates/dmp/oracle/vendor/`, Apache-2.0). Regenerate it
+  with `node oracle/generate.mjs` from the crate directory. CI fails if the
+  checked-in corpus drifts from what the oracle produces.
+- `cargo bench -p dmp-bench` runs the criterion suite (realistic and
+  pathological datasets; see `crates/dmp-bench/benches/dmp.rs`).
+  `cargo run --profile profiling -p dmp-bench --bin profile -- --list` shows
+  the matching profiler scenarios; each run writes a flamegraph to
+  `target/profiles/` and prints hotspot tables. Build with `--profile dist`
+  (fat LTO) for final numbers.

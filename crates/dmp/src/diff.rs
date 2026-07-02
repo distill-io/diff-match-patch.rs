@@ -32,12 +32,12 @@ impl Dmp {
                 let mut packer = crate::tokenize::GraphemePacker::new(&[text1, text2]);
                 let packed1 = packer.pack(text1);
                 let packed2 = packer.pack(text2);
-                let mut diffs = main_internal(self, &packed1, &packed2, checklines, deadline);
+                let mut diffs = main_internal(self, &packed1, &packed2, checklines, true, deadline);
                 packer.unpack_diffs(&mut diffs);
                 return diffs;
             }
         }
-        main_internal(self, text1, text2, checklines, deadline)
+        main_internal(self, text1, text2, checklines, true, deadline)
     }
 
     /// The deadline equivalent of `diff_timeout` starting now; bisect gives up
@@ -92,7 +92,7 @@ impl Dmp {
     /// Vector of diffs as changes.
     pub fn diff_bisect(&mut self, char1: &Vec<char>, char2: &Vec<char>) -> Vec<Diff> {
         let deadline = self.deadline_from_now();
-        bisect_diff(self, char1, char2, deadline)
+        bisect_diff(self, char1, char2, true, deadline)
     }
 
     pub fn diff_common_prefix(&mut self, text1: &Vec<char>, text2: &Vec<char>) -> i32 {
@@ -158,9 +158,10 @@ fn main_internal(
     text1: &str,
     text2: &str,
     checklines: bool,
+    allow_words: bool,
     deadline: Option<Instant>,
 ) -> Vec<Diff> {
-    // check for empty text
+    // str-level fast paths: the trivial outcomes skip the char materialization.
     if text1.is_empty() && text2.is_empty() {
         return vec![];
     } else if text1.is_empty() {
@@ -168,30 +169,82 @@ fn main_internal(
     } else if text2.is_empty() {
         return vec![Diff::new(-1, text1.to_string())];
     }
-
-    // check for equality
     if text1 == text2 {
         return vec![Diff::new(0, text1.to_string())];
     }
 
     let char1: Vec<char> = text1.chars().collect();
     let char2: Vec<char> = text2.chars().collect();
+    main_slices(dmp, &char1, &char2, checklines, allow_words, deadline)
+}
+
+/// `diff_main` over char slices, for crate internals that already hold char
+/// buffers (patch_apply): same deadline setup, same grapheme dispatch —
+/// grapheme mode round-trips through `diff_main` to keep cluster packing —
+/// but the char-mode path skips the String materialization entirely.
+pub(crate) fn diff_main_chars(
+    dmp: &mut Dmp,
+    old: &[char],
+    new: &[char],
+    checklines: bool,
+) -> Vec<Diff> {
+    #[cfg(feature = "grapheme")]
+    {
+        if dmp.segmentation == crate::types::Segmentation::Grapheme {
+            let t1: String = old.iter().collect();
+            let t2: String = new.iter().collect();
+            return dmp.diff_main(&t1, &t2, checklines);
+        }
+    }
+    let deadline = dmp.deadline_from_now();
+    main_slices(dmp, old, new, checklines, true, deadline)
+}
+
+/// The diff core over char slices. All recursion — bisect splits, half-match
+/// halves — stays in token space; text becomes a String only when a Diff is
+/// emitted. Materializing per recursion level instead costs O(N·D) copies,
+/// which is what the realistic diff benchmarks are most sensitive to.
+///
+/// `allow_words` gates the opt-in word-mode speedup: packed-token diffs and
+/// word-level rediffs pass false, both because packed placeholder chars must
+/// never be re-tokenized (some ids alias whitespace chars) and because a
+/// whitespace-free block would recurse onto itself.
+fn main_slices(
+    dmp: &mut Dmp,
+    old: &[char],
+    new: &[char],
+    checklines: bool,
+    allow_words: bool,
+    deadline: Option<Instant>,
+) -> Vec<Diff> {
+    // check for empty text
+    if old.is_empty() && new.is_empty() {
+        return vec![];
+    } else if old.is_empty() {
+        return vec![Diff::new(1, new.iter().collect())];
+    } else if new.is_empty() {
+        return vec![Diff::new(-1, old.iter().collect())];
+    }
+
+    // check for equality
+    if old == new {
+        return vec![Diff::new(0, old.iter().collect())];
+    }
+
     // Trim off common prefix and suffix (speedup).
-    let prefix = engine::common_prefix(&char1, &char2);
-    let suffix = engine::common_suffix(&char1[prefix..], &char2[prefix..]);
-    let mid1 = &char1[prefix..char1.len() - suffix];
-    let mid2 = &char2[prefix..char2.len() - suffix];
+    let prefix = engine::common_prefix(old, new);
+    let suffix = engine::common_suffix(&old[prefix..], &new[prefix..]);
+    let mid1 = &old[prefix..old.len() - suffix];
+    let mid2 = &new[prefix..new.len() - suffix];
 
     let mut diffs: Vec<Diff> = Vec::new();
     // Restore the prefix, compute the diff on the middle block, restore the suffix.
     if prefix > 0 {
-        diffs.push(Diff::new(0, char1[..prefix].iter().collect()));
+        diffs.push(Diff::new(0, old[..prefix].iter().collect()));
     }
-    for diff in compute(dmp, mid1, mid2, checklines, deadline) {
-        diffs.push(diff);
-    }
+    diffs.extend(compute(dmp, mid1, mid2, checklines, allow_words, deadline));
     if suffix > 0 {
-        diffs.push(Diff::new(0, char1[char1.len() - suffix..].iter().collect()));
+        diffs.push(Diff::new(0, old[old.len() - suffix..].iter().collect()));
     }
     dmp.diff_cleanup_merge_impl(&mut diffs);
     diffs
@@ -204,6 +257,7 @@ fn compute(
     old: &[char],
     new: &[char],
     checklines: bool,
+    allow_words: bool,
     deadline: Option<Instant>,
 ) -> Vec<Diff> {
     if old.is_empty() {
@@ -248,10 +302,24 @@ fn compute(
     if deadline.is_some() {
         if let Some(hm) = engine::half_match(old, new) {
             // A half-match was found, send both pairs off for separate processing.
-            let (text1_a, text1_b, text2_a, text2_b, mid_common) = split_half_match(old, new, &hm);
-            let mut diffs = main_internal(dmp, &text1_a, &text2_a, checklines, deadline);
+            let mid_common: String = old[hm.old_a..hm.old_a + hm.common].iter().collect();
+            let mut diffs = main_slices(
+                dmp,
+                &old[..hm.old_a],
+                &new[..hm.new_a],
+                checklines,
+                allow_words,
+                deadline,
+            );
             diffs.push(Diff::new(0, mid_common));
-            diffs.extend(main_internal(dmp, &text1_b, &text2_b, checklines, deadline));
+            diffs.extend(main_slices(
+                dmp,
+                &old[hm.old_a + hm.common..],
+                &new[hm.new_a + hm.common..],
+                checklines,
+                allow_words,
+                deadline,
+            ));
             return diffs;
         }
     }
@@ -259,21 +327,33 @@ fn compute(
     if checklines && old.len() > 100 && new.len() > 100 {
         return line_mode(dmp, old, new, deadline);
     }
-    bisect_diff(dmp, old, new, deadline)
+    if allow_words && dmp.word_mode && old.len() > 100 && new.len() > 100 {
+        return word_mode(dmp, old, new, deadline);
+    }
+    bisect_diff(dmp, old, new, allow_words, deadline)
 }
 
 /// Split on the Myers middle snake and recurse, or emit delete+insert when
 /// there is no overlap (or the deadline expired).
-fn bisect_diff(dmp: &mut Dmp, old: &[char], new: &[char], deadline: Option<Instant>) -> Vec<Diff> {
+fn bisect_diff(
+    dmp: &mut Dmp,
+    old: &[char],
+    new: &[char],
+    allow_words: bool,
+    deadline: Option<Instant>,
+) -> Vec<Diff> {
     match engine::bisect(old, new, deadline) {
         Some((x, y)) => {
-            let text1a: String = old[..x].iter().collect();
-            let text2a: String = new[..y].iter().collect();
-            let text1b: String = old[x..].iter().collect();
-            let text2b: String = new[y..].iter().collect();
-            // Compute both diffs serially.
-            let mut diffs = main_internal(dmp, &text1a, &text2a, false, deadline);
-            diffs.append(&mut main_internal(dmp, &text1b, &text2b, false, deadline));
+            // Compute both diffs serially on the split halves.
+            let mut diffs = main_slices(dmp, &old[..x], &new[..y], false, allow_words, deadline);
+            diffs.extend(main_slices(
+                dmp,
+                &old[x..],
+                &new[y..],
+                false,
+                allow_words,
+                deadline,
+            ));
             diffs
         }
         None => {
@@ -290,16 +370,53 @@ fn bisect_diff(dmp: &mut Dmp, old: &[char], new: &[char], deadline: Option<Insta
 /// replacement blocks character by character.
 fn line_mode(dmp: &mut Dmp, old: &[char], new: &[char], deadline: Option<Instant>) -> Vec<Diff> {
     // Scan the text on a line-by-line basis first.
-    let (text3, text4, linearray) = dmp.diff_lines_tochars(&old.to_vec(), &new.to_vec());
+    let (text3, text4, store) = crate::tokenize::lines_tochars_arena(old, new);
 
-    let mut diffs: Vec<Diff> = main_internal(dmp, &text3, &text4, false, deadline);
+    // Packed placeholder chars must never be re-tokenized: no line mode
+    // (checklines = false) and no word mode (allow_words = false).
+    let mut diffs: Vec<Diff> = main_internal(dmp, &text3, &text4, false, false, deadline);
 
     // Convert the diff back to original text.
-    dmp.diff_chars_tolines(&mut diffs, &linearray);
+    crate::tokenize::chars_tolines_arena(&mut diffs, &store);
     // Eliminate freak matches (e.g. blank lines)
     dmp.diff_cleanup_semantic_impl(&mut diffs);
 
-    // Rediff any replacement blocks, this time character-by-character.
+    // Rediff any replacement blocks, this time character-by-character —
+    // where the opt-in word mode may engage on large blocks.
+    rediff_blocks(dmp, diffs, true, deadline)
+}
+
+/// Word-mode speedup (opt-in via `Dmp::word_mode`): the word-level analog of
+/// line mode. Pack unique words into tokens, diff in word space, then rediff
+/// the replacement blocks character by character. The output reconstructs
+/// both inputs exactly like line mode's does, but edit boundaries snap to
+/// word boundaries first, so it is not byte-identical to the reference
+/// implementation's char-level diff.
+fn word_mode(dmp: &mut Dmp, old: &[char], new: &[char], deadline: Option<Instant>) -> Vec<Diff> {
+    let (text3, text4, store) = crate::tokenize::words_tochars_arena(old, new);
+
+    let mut diffs: Vec<Diff> = main_internal(dmp, &text3, &text4, false, false, deadline);
+
+    crate::tokenize::chars_tolines_arena(&mut diffs, &store);
+    // Unlike line mode, NO semantic cleanup before the rediff: word-level
+    // equalities between changes are short, the pass would eliminate them
+    // and collapse the diff back into one giant block — whose char-level
+    // rediff is exactly the cost this mode exists to avoid. Callers run
+    // their own cleanup passes on the final diff.
+
+    // Word-level rediffs must not re-enter word mode: a whitespace-free
+    // block packs into a single token and would recurse onto itself.
+    rediff_blocks(dmp, diffs, false, deadline)
+}
+
+/// Shared tail of the token-mode speedups: rediff every replacement block of
+/// `diffs` at the next-finer granularity.
+fn rediff_blocks(
+    dmp: &mut Dmp,
+    mut diffs: Vec<Diff>,
+    allow_words: bool,
+    deadline: Option<Instant>,
+) -> Vec<Diff> {
     // Add a dummy entry at the end.
     diffs.push(Diff::new(0, "".to_string()));
     let mut count_delete = 0;
@@ -319,7 +436,14 @@ fn line_mode(dmp: &mut Dmp, old: &[char], new: &[char], deadline: Option<Instant
             // Upon reaching an equality, check for prior redundancies.
             if count_delete >= 1 && count_insert >= 1 {
                 // Delete the offending records and add the merged ones.
-                let sub_diff = main_internal(dmp, &text_delete, &text_insert, false, deadline);
+                let sub_diff = main_internal(
+                    dmp,
+                    &text_delete,
+                    &text_insert,
+                    false,
+                    allow_words,
+                    deadline,
+                );
                 for z in sub_diff {
                     temp.push(z);
                 }

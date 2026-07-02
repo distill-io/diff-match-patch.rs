@@ -48,6 +48,14 @@ pub struct Dmp {
     pub patch_delete_threshold: f32,
     // Unit of text the diff engine treats as atomic.
     pub segmentation: Segmentation,
+    /*Opt-in word-mode speedup: large edit blocks are diffed over packed word
+    tokens first (the word-level analog of the line-mode speedup), then the
+    changed words are rediffed character by character. Dramatically faster on
+    rename-shaped documents where every line changes by a few characters.
+    The output is still a valid diff (it reconstructs both inputs), but edit
+    boundaries snap to word boundaries first, so it is NOT byte-identical to
+    the reference implementation's output — hence off by default.*/
+    pub word_mode: bool,
 }
 
 pub struct Diff {
@@ -126,12 +134,12 @@ pub(crate) fn max(x: i32, y: i32) -> i32 {
 
 pub(crate) fn find_char(cha: char, text: &[char], start: usize) -> i32 {
     // it will return the first index of a character after a index or return -1 if not found.
-    for (i, text_item) in text.iter().enumerate().skip(start) {
-        if *text_item == cha {
-            return i as i32;
-        }
+    // Chunk-scanned: line packing calls this once per line, making the
+    // newline hunt one of the hottest loops in realistic diffs.
+    match crate::engine::skip_to(text, start, &cha) {
+        Some(i) => i as i32,
+        None => -1,
     }
-    -1
 }
 
 impl fmt::Debug for Diff {
@@ -189,6 +197,7 @@ impl Dmp {
             match_maxbits: 32,
             match_threshold: 0.5,
             segmentation: Segmentation::default(),
+            word_mode: false,
         }
     }
 }

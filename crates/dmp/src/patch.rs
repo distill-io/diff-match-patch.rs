@@ -26,11 +26,19 @@ impl Dmp {
             text[patch.start2 as usize..(patch.length1 as usize + patch.start2 as usize)].to_vec();
         let mut padding: i32 = 0;
 
-        // Look for the first and last matches of pattern in text.  If two different
-        // matches are found, increase the pattern length.
+        // Grow the pattern while it is ambiguous (occurs more than once) in
+        // text. A pattern is always a slice of text, so it occurs at least
+        // once; the empty pattern (insertion with no margin yet) mirrors the
+        // oracle's first-index != last-index check: unique only in 1-char text.
+        let ambiguous = |text: &[char], pattern: &[char]| {
+            if pattern.is_empty() {
+                text.len() != 1
+            } else {
+                engine::occurs_twice(text, pattern)
+            }
+        };
         let mut rst = 0;
-        while engine::find_sub(text, &pattern, 0)
-            != engine::rfind_sub(text, &pattern, text.len() - 1)
+        while ambiguous(text, &pattern)
             && (pattern.len() as i32) < (self.match_maxbits - self.patch_margin * 2)
         {
             padding += self.patch_margin;
@@ -126,8 +134,8 @@ impl Dmp {
         let mut patch: Patch = Patch::new(vec![], 0, 0, 0, 0);
         let mut char_count1 = 0; // Number of characters into the text1 string.
         let mut char_count2 = 0; // Number of characters into the text2 string.
-        let mut prepatch: Vec<char> = (text1.to_string()).chars().collect(); // Recreate the patches to determine context info.
-        let mut postpatch: Vec<char> = (text1.to_string()).chars().collect();
+        let mut prepatch: Vec<char> = text1.chars().collect(); // Recreate the patches to determine context info.
+        let mut postpatch: Vec<char> = prepatch.clone();
         for i in 0..diffs.len() {
             let temp1: &Vec<char> = &(diffs[i].text.chars().collect());
             if patch.diffs.is_empty() && diffs[i].operation != 0 {
@@ -140,26 +148,21 @@ impl Dmp {
                 patch
                     .diffs
                     .push(Diff::new(diffs[i].operation, diffs[i].text.clone()));
-                let temp: Vec<char> = postpatch[char_count2 as usize..].to_vec();
-                postpatch = postpatch[..char_count2 as usize].to_vec();
                 patch.length2 += temp1.len() as i32;
-                for ch in temp1 {
-                    postpatch.push(*ch);
-                }
-                for ch in temp {
-                    postpatch.push(ch);
-                }
+                postpatch.splice(
+                    char_count2 as usize..char_count2 as usize,
+                    temp1.iter().copied(),
+                );
             } else if diffs[i].operation == -1 {
                 // Deletion.
                 patch
                     .diffs
                     .push(Diff::new(diffs[i].operation, diffs[i].text.clone()));
-                let temp: Vec<char> = postpatch[(temp1.len() + char_count2 as usize)..].to_vec();
-                postpatch = postpatch[..char_count2 as usize].to_vec();
                 patch.length1 += temp1.len() as i32;
-                for ch in &temp {
-                    postpatch.push(*ch);
-                }
+                postpatch.splice(
+                    char_count2 as usize..char_count2 as usize + temp1.len(),
+                    std::iter::empty(),
+                );
             } else if temp1.len() as i32 <= self.patch_margin * 2
                 && !patch.diffs.is_empty()
                 && i != diffs.len() - 1
@@ -266,25 +269,23 @@ impl Dmp {
         let mut results: Vec<bool> = vec![false; patches_copy.len()];
         for x in 0..patches_copy.len() {
             let expected_loc: i32 = patches_copy[x].start2 + delta;
-            let text1: Vec<char> = self
-                .diff_text1(&mut patches_copy[x].diffs)
-                .chars()
-                .collect();
+            let text1: Vec<char> = diff_text1_chars(&patches_copy[x].diffs);
             let mut start_loc: i32;
             let mut end_loc = -1;
             if text1.len() as i32 > self.match_maxbits {
                 // patch_splitMax will only provide an oversized pattern in the case of
                 // a monster delete.
-                let first: String = (text[..]).iter().collect();
-                let second: String = text1[..self.match_maxbits as usize].iter().collect();
-                let second1: String = text1[text1.len() - self.match_maxbits as usize..]
-                    .iter()
-                    .collect();
-                start_loc = self.match_main(first.as_str(), second.as_str(), expected_loc);
+                start_loc = crate::match_::match_chars(
+                    self,
+                    &text,
+                    &text1[..self.match_maxbits as usize],
+                    expected_loc,
+                );
                 if start_loc != -1 {
-                    end_loc = self.match_main(
-                        first.as_str(),
-                        second1.as_str(),
+                    end_loc = crate::match_::match_chars(
+                        self,
+                        &text,
+                        &text1[text1.len() - self.match_maxbits as usize..],
                         expected_loc + text1.len() as i32 - self.match_maxbits,
                     );
                     if end_loc == -1 || start_loc >= end_loc {
@@ -293,9 +294,7 @@ impl Dmp {
                     }
                 }
             } else {
-                let first: String = text[..].iter().collect();
-                let second: String = text1[..].iter().collect();
-                start_loc = self.match_main(first.as_str(), second.as_str(), expected_loc);
+                start_loc = crate::match_::match_chars(self, &text, &text1, expected_loc);
             }
             if start_loc == -1 {
                 // No match found.  :(
@@ -315,22 +314,22 @@ impl Dmp {
                 }
                 end_index = std::cmp::min(text.len(), end_index);
 
-                let text2: Vec<char> = text[start_loc as usize..end_index].to_vec();
-
-                if text1 == text2 {
-                    // Perfect match, just shove the replacement text in.
-                    let temp3: String = text[..start_loc as usize].iter().collect();
-                    let temp4 = self.diff_text2(&mut patches_copy[x].diffs);
-                    let temp5: String = text[(start_loc as usize + text1.len())..].iter().collect();
-                    let temp6 = temp3 + temp4.as_str() + temp5.as_str();
-                    text = temp6.chars().collect();
+                if text1[..] == text[start_loc as usize..end_index] {
+                    // Perfect match, just splice the replacement text in.
+                    let replacement = diff_text2_chars(&patches_copy[x].diffs);
+                    text.splice(
+                        start_loc as usize..start_loc as usize + text1.len(),
+                        replacement,
+                    );
                 } else {
                     // Imperfect match.
                     // Run a diff to get a framework of equivalent indices.
-                    let temp3: String = text1[..].iter().collect();
-                    let temp4: String = text2[..].iter().collect();
-                    let mut diffs: Vec<Diff> =
-                        self.diff_main(temp3.as_str(), temp4.as_str(), false);
+                    let mut diffs: Vec<Diff> = crate::diff::diff_main_chars(
+                        self,
+                        &text1,
+                        &text[start_loc as usize..end_index],
+                        false,
+                    );
                     if text1.len() as i32 > self.match_maxbits
                         && (self.diff_levenshtein(&diffs) as f32 / (text1.len() as f32)
                             > self.patch_delete_threshold)
@@ -341,33 +340,26 @@ impl Dmp {
                         self.diff_cleanup_semantic_lossless(&mut diffs);
                         let mut index1: i32 = 0;
                         for y in 0..patches_copy[x].diffs.len() {
-                            let mod1 = patches_copy[x].diffs[y].clone();
-                            if mod1.operation != 0 {
+                            let op = patches_copy[x].diffs[y].operation;
+                            let mod_len = patches_copy[x].diffs[y].text.chars().count() as i32;
+                            if op != 0 {
                                 let index2: i32 = self.diff_xindex(&diffs, index1);
-                                if mod1.operation == 1 {
+                                if op == 1 {
                                     // Insertion
-                                    let temp3: String =
-                                        text[..(start_loc + index2) as usize].iter().collect();
-                                    let temp4: String =
-                                        text[(start_loc + index2) as usize..].iter().collect();
-                                    let temp5 = temp3 + mod1.text.as_str() + temp4.as_str();
-                                    text = temp5.chars().collect();
-                                } else if mod1.operation == -1 {
-                                    // Deletion
-                                    let temp3: String =
-                                        text[..(start_loc + index2) as usize].iter().collect();
-                                    let diffs_text_len = mod1.text.chars().count();
-                                    let temp4: String = text[(start_loc
-                                        + self.diff_xindex(&diffs, index1 + diffs_text_len as i32))
-                                        as usize..]
-                                        .iter()
-                                        .collect();
-                                    let temp5 = temp3 + temp4.as_str();
-                                    text = temp5.chars().collect();
+                                    let at = (start_loc + index2) as usize;
+                                    text.splice(at..at, patches_copy[x].diffs[y].text.chars());
+                                } else if op == -1 {
+                                    // Deletion. diff_xindex is non-decreasing
+                                    // in loc, so the range never inverts.
+                                    let from = (start_loc + index2) as usize;
+                                    let until = (start_loc
+                                        + self.diff_xindex(&diffs, index1 + mod_len))
+                                        as usize;
+                                    text.splice(from..until, std::iter::empty());
                                 }
                             }
-                            if mod1.operation != -1 {
-                                index1 += mod1.text.chars().count() as i32;
+                            if op != -1 {
+                                index1 += mod_len;
                             }
                         }
                     }
@@ -375,7 +367,8 @@ impl Dmp {
             }
         }
         // Strip the padding off.
-        text = text[null_padding.len()..(text.len() - null_padding.len())].to_vec();
+        text.drain(..null_padding.len());
+        text.truncate(text.len() - null_padding.len());
         (text, results)
     }
 
@@ -614,6 +607,29 @@ impl Dmp {
             .next()
             .unwrap_or_else(|| panic!("Invalid patch string: {}", textline))
     }
+}
+
+/// diff_text1 (equalities + deletions) as chars — patch_apply works entirely
+/// in char space, so the String round trip would be pure overhead.
+fn diff_text1_chars(diffs: &[Diff]) -> Vec<char> {
+    let mut text = Vec::new();
+    for diff in diffs {
+        if diff.operation != 1 {
+            text.extend(diff.text.chars());
+        }
+    }
+    text
+}
+
+/// diff_text2 (equalities + insertions) as chars; see diff_text1_chars.
+fn diff_text2_chars(diffs: &[Diff]) -> Vec<char> {
+    let mut text = Vec::new();
+    for diff in diffs {
+        if diff.operation != -1 {
+            text.extend(diff.text.chars());
+        }
+    }
+    text
 }
 
 #[derive(Debug)]

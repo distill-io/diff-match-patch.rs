@@ -9,7 +9,7 @@ repository = "https://github.com/distill-io/diff-match-patch.rs"
 keywords = ["diff", "diff-match-patch"]
 categories = ["Development tools", "Text processing"]
 license = "MIT"
-readme = "../README.md"
+readme = "../../README.md"
 # The vendored Apache-2.0 oracle is a dev-time artifact; keep it (and its
 # license) out of the published MIT crate.
 exclude = ["oracle/"]
@@ -29,10 +29,5 @@ percent-encoding = "2"
 unicode-segmentation = { version = "1", optional = true }
 
 [dev-dependencies]
-criterion = "0.8.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-[[bench]]
-name = "dmp"
-harness = false

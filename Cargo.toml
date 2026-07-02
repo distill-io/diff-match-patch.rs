@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dmp",
+    "crates/dmp-bench",
+]
+
+# Opt-in max-optimization profile for final perf numbers (does NOT change
+# `--release`, so everyday `cargo test --release` stays fast to compile).
+# Build with `cargo bench --profile dist` / `cargo build --profile dist`.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
+# Release codegen + debug symbols, for the sampling profiler
+# (`cargo run --profile profiling -p dmp-bench --bin profile`). Symbols only
+# affect binary size, not code quality, so profiles reflect release behavior.
+[profile.profiling]
+inherits = "release"
+debug = true

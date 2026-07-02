@@ -1,6 +1,7 @@
 // Diff cleanup passes (merge, semantic, efficiency) and diff-derived
 // metrics (xindex, text1/text2 reconstruction, Levenshtein).
 
+use crate::engine;
 #[cfg(feature = "grapheme")]
 use crate::types::Segmentation;
 use crate::types::{max, Diff, Dmp};
@@ -160,79 +161,55 @@ impl Dmp {
     /// Args:
     /// diffs: Vector of diff object.
     pub(crate) fn diff_cleanup_semantic_lossless_impl(&mut self, diffs: &mut Vec<Diff>) {
-        let mut pointer = 1;
-        let mut equality1;
-        let mut equality2;
-        let mut edit: String;
-        let mut common_offset;
-        let mut common_string: String;
-        let mut best_equality1;
-        let mut best_edit;
-        let mut best_equality2;
-        let mut best_score;
-        let mut score;
-
+        let mut pointer: i32 = 1;
         //Intentionally ignore the first and last element (don't need checking).
         while pointer < diffs.len() as i32 - 1 {
             if diffs[pointer as usize - 1].operation == 0
                 && diffs[pointer as usize + 1].operation == 0
             {
-                //  This is a single edit surrounded by equalities.
-                equality1 = diffs[pointer as usize - 1].text.clone();
-                edit = diffs[pointer as usize].text.clone();
-                equality2 = diffs[pointer as usize + 1].text.clone();
-                let mut edit_vec: Vec<char> = edit.chars().collect();
-                let mut equality1_vec: Vec<char> = equality1.chars().collect();
-                let mut equality2_vec: Vec<char> = equality2.chars().collect();
+                // This is a single edit surrounded by equalities. Slide it
+                // over one concatenated buffer: the buffer is invariant under
+                // both the left shift and each right slide (the moved char is
+                // equal on both sides by construction), so only the split
+                // points (a, b) move, and each step costs two boundary score
+                // probes instead of rebuilding three char vectors.
+                let buf: Vec<char> = diffs[pointer as usize - 1]
+                    .text
+                    .chars()
+                    .chain(diffs[pointer as usize].text.chars())
+                    .chain(diffs[pointer as usize + 1].text.chars())
+                    .collect();
+                let eq1_len = diffs[pointer as usize - 1].text.chars().count();
+                let edit_len = diffs[pointer as usize].text.chars().count();
+                let mut a = eq1_len;
+                let mut b = eq1_len + edit_len;
 
                 // First, shift the edit as far left as possible.
-                common_offset = self.diff_common_suffix(&equality1_vec, &edit_vec);
-                if common_offset != 0 {
-                    common_string = edit_vec[(edit_vec.len() - common_offset as usize)..]
-                        .iter()
-                        .collect();
-                    equality1 = equality1_vec[..(equality1_vec.len() - common_offset as usize)]
-                        .iter()
-                        .collect();
-                    let temp7: String = edit_vec[..(edit_vec.len() - common_offset as usize)]
-                        .iter()
-                        .collect();
-                    edit = common_string.clone() + temp7.as_str();
-                    equality2 = common_string + equality2.as_str();
-                    edit_vec = edit.chars().collect();
-                    equality2_vec = equality2.chars().collect();
-                    equality1_vec = equality1.chars().collect();
-                }
+                let common_offset = engine::common_suffix(&buf[..a], &buf[a..b]);
+                a -= common_offset;
+                b -= common_offset;
+
                 // Second, step character by character right, looking for the best fit.
-                best_equality1 = equality1.clone();
-                best_edit = edit;
-                best_equality2 = equality2;
-                best_score = self.diff_cleanup_semantic_score(&equality1_vec, &edit_vec)
-                    + self.diff_cleanup_semantic_score(&edit_vec, &equality2_vec);
-                let edit_len = edit_vec.len();
-                let mut equality2_len = equality2_vec.len();
-                while equality2_len > 0 && edit_len > 0 {
-                    if edit_vec[0] != equality2_vec[0] {
-                        break;
-                    }
-                    let ch = edit_vec[0];
-                    equality1_vec.push(ch);
-                    edit_vec.push(ch);
-                    edit_vec = edit_vec[1..].to_vec();
-                    equality2_len -= 1;
-                    equality2_vec = equality2_vec[1..].to_vec();
-                    score = self.diff_cleanup_semantic_score(&equality1_vec, &edit_vec)
-                        + self.diff_cleanup_semantic_score(&edit_vec, &equality2_vec);
+                let mut best = (a, b);
+                let mut best_score = self.diff_cleanup_semantic_score(&buf[..a], &buf[a..b])
+                    + self.diff_cleanup_semantic_score(&buf[a..b], &buf[b..]);
+                while a < b && b < buf.len() && buf[a] == buf[b] {
+                    a += 1;
+                    b += 1;
+                    let score = self.diff_cleanup_semantic_score(&buf[..a], &buf[a..b])
+                        + self.diff_cleanup_semantic_score(&buf[a..b], &buf[b..]);
                     // The >= encourages trailing rather than leading whitespace on edits.
                     if score >= best_score {
                         best_score = score;
-                        best_equality1 = equality1_vec[0..].iter().collect();
-                        best_edit = edit_vec[..].iter().collect();
-                        best_equality2 = equality2_vec[..].iter().collect();
+                        best = (a, b);
                     }
                 }
+
+                let best_equality1: String = buf[..best.0].iter().collect();
                 if diffs[pointer as usize - 1].text != best_equality1 {
                     // We have an improvement, save it back to the diff.
+                    let best_edit: String = buf[best.0..best.1].iter().collect();
+                    let best_equality2: String = buf[best.1..].iter().collect();
                     if !best_equality1.is_empty() {
                         diffs[pointer as usize - 1] =
                             Diff::new(diffs[pointer as usize - 1].operation, best_equality1);
@@ -444,87 +421,80 @@ impl Dmp {
         if diffs.is_empty() {
             return;
         }
-        diffs.push(Diff::new(0, "".to_string()));
+        // First pass: one forward fold into a fresh vector — the same
+        // accumulate / factor / flush the in-place version did, without its
+        // Vec::insert/remove churn (quadratic on many-run diffs). A dummy
+        // equality flushes the final run.
+        let mut out: Vec<Diff> = Vec::with_capacity(diffs.len());
         let mut text_insert: String = "".to_string();
         let mut text_delete: String = "".to_string();
-        let mut i: i32 = 0;
         let mut count_insert = 0;
         let mut count_delete = 0;
-        while (i as usize) < diffs.len() {
-            if diffs[i as usize].operation == -1 {
-                text_delete += diffs[i as usize].text.as_str();
+        for diff in diffs
+            .drain(..)
+            .chain(std::iter::once(Diff::new(0, "".to_string())))
+        {
+            if diff.operation == -1 {
+                text_delete += diff.text.as_str();
                 count_delete += 1;
-                i += 1;
-            } else if diffs[i as usize].operation == 1 {
-                text_insert += diffs[i as usize].text.as_str();
+            } else if diff.operation == 1 {
+                text_insert += diff.text.as_str();
                 count_insert += 1;
-                i += 1;
             } else {
+                let mut equality = diff;
                 // Upon reaching an equality, check for prior redundancies.
                 if count_delete + count_insert > 1 {
                     let mut delete_vec: Vec<char> = text_delete.chars().collect();
                     let mut insert_vec: Vec<char> = text_insert.chars().collect();
                     if count_delete > 0 && count_insert > 0 {
                         // Factor out any common prefixies.
-                        let mut commonlength = self.diff_common_prefix(&insert_vec, &delete_vec);
+                        let mut commonlength = engine::common_prefix(&insert_vec, &delete_vec);
                         if commonlength != 0 {
-                            let temp1: String =
-                                (&insert_vec)[..(commonlength as usize)].iter().collect();
-                            let x = i - count_delete - count_insert - 1;
-                            if x >= 0 && diffs[x as usize].operation == 0 {
-                                diffs[x as usize] = Diff::new(
-                                    diffs[x as usize].operation,
-                                    diffs[x as usize].text.clone() + temp1.as_str(),
-                                );
-                            } else {
-                                diffs.insert(0, Diff::new(0, temp1));
-                                i += 1;
+                            let prefix: String = insert_vec[..commonlength].iter().collect();
+                            match out.last_mut() {
+                                Some(prev) if prev.operation == 0 => prev.text += prefix.as_str(),
+                                // No equality before the run to grow: mirrors
+                                // the in-place version's insert at the head.
+                                _ => out.insert(0, Diff::new(0, prefix)),
                             }
-                            insert_vec = insert_vec[(commonlength as usize)..].to_vec();
-                            delete_vec = delete_vec[(commonlength as usize)..].to_vec();
+                            insert_vec.drain(..commonlength);
+                            delete_vec.drain(..commonlength);
                         }
 
                         // Factor out any common suffixies.
-                        commonlength = self.diff_common_suffix(&insert_vec, &delete_vec);
+                        commonlength = engine::common_suffix(&insert_vec, &delete_vec);
                         if commonlength != 0 {
-                            let temp1: String = (&insert_vec)
-                                [(insert_vec.len() - commonlength as usize)..]
+                            let suffix: String = insert_vec[insert_vec.len() - commonlength..]
                                 .iter()
                                 .collect();
-                            diffs[i as usize] = Diff::new(
-                                diffs[i as usize].operation,
-                                temp1 + diffs[i as usize].text.as_str(),
-                            );
-                            insert_vec =
-                                insert_vec[..(insert_vec.len() - commonlength as usize)].to_vec();
-                            delete_vec =
-                                delete_vec[..(delete_vec.len() - commonlength as usize)].to_vec();
+                            equality.text = suffix + equality.text.as_str();
+                            insert_vec.truncate(insert_vec.len() - commonlength);
+                            delete_vec.truncate(delete_vec.len() - commonlength);
                         }
                     }
-
-                    // Delete the offending records and add the merged ones.
-                    i -= count_delete + count_insert;
-                    for _j in 0..(count_delete + count_insert) as usize {
-                        diffs.remove(i as usize);
-                    }
+                    // Add the merged records.
                     if !delete_vec.is_empty() {
-                        diffs.insert(i as usize, Diff::new(-1, delete_vec.iter().collect()));
-                        i += 1;
+                        out.push(Diff::new(-1, delete_vec.iter().collect()));
                     }
                     if !insert_vec.is_empty() {
-                        diffs.insert(i as usize, Diff::new(1, insert_vec.iter().collect()));
-                        i += 1;
+                        out.push(Diff::new(1, insert_vec.iter().collect()));
                     }
-                    i += 1;
-                } else if i != 0 && diffs[i as usize - 1].operation == 0 {
-                    // Merge this equality with the previous one.
-                    diffs[i as usize - 1] = Diff::new(
-                        diffs[i as usize - 1].operation,
-                        diffs[i as usize - 1].text.clone() + diffs[i as usize].text.as_str(),
-                    );
-                    diffs.remove(i as usize);
+                    out.push(equality);
+                } else if count_delete + count_insert == 1 {
+                    // A single edit passes through untouched (even an
+                    // empty-text one, as the in-place version left it).
+                    if count_delete == 1 {
+                        out.push(Diff::new(-1, std::mem::take(&mut text_delete)));
+                    } else {
+                        out.push(Diff::new(1, std::mem::take(&mut text_insert)));
+                    }
+                    out.push(equality);
                 } else {
-                    i += 1;
+                    // No pending edits: merge adjacent equalities.
+                    match out.last_mut() {
+                        Some(prev) if prev.operation == 0 => prev.text += equality.text.as_str(),
+                        _ => out.push(equality),
+                    }
                 }
                 count_delete = 0;
                 text_delete = "".to_string();
@@ -532,6 +502,7 @@ impl Dmp {
                 count_insert = 0;
             }
         }
+        *diffs = out;
         // Remove the dummy entry at the end.
         if diffs[diffs.len() - 1].text.is_empty() {
             diffs.pop();
@@ -543,7 +514,7 @@ impl Dmp {
         e.g: A<ins>BA</ins>C -> <ins>AB</ins>AC
         */
         let mut changes = false;
-        i = 1;
+        let mut i: i32 = 1;
         // Intentionally ignore the first and last element (don't need checking).
         while (i as usize) < diffs.len() - 1 {
             if diffs[i as usize - 1].operation == 0 && diffs[i as usize + 1].operation == 0 {
