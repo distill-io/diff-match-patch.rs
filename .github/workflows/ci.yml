@@ -16,7 +16,7 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - name: Test (default: char-only)
+      - name: "Test (default: char-only)"
         run: cargo test --locked --workspace
       - name: Test (grapheme feature)
         run: cargo test --locked --workspace --all-features
