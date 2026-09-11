@@ -142,7 +142,7 @@ impl Dmp {
         for diff in diffs.iter_mut() {
             let mut text: String = "".to_string();
             for ch in diff.text.chars() {
-                text += line_array[ch as usize].as_str();
+                text += line_array[id_to_slot(ch as u32)].as_str();
             }
             diff.text = text;
         }
@@ -240,6 +240,18 @@ fn slot_to_id(slot: usize) -> u32 {
         slot as u32 + 2048
     } else {
         slot as u32
+    }
+}
+
+/// The inverse of [`slot_to_id`]: ids at or past the surrogate gap (U+E000)
+/// map back to their slot by subtracting the gap width. Every decoder must go
+/// through this — indexing by raw id reads 2048 slots past the real line once
+/// a document exceeds 55,295 unique lines.
+fn id_to_slot(id: u32) -> usize {
+    if id >= 57344 {
+        id as usize - 2048
+    } else {
+        id as usize
     }
 }
 
@@ -407,12 +419,12 @@ pub(crate) fn chars_tolines_arena(diffs: &mut [TDiff], store: &LineArena) {
     for diff in diffs.iter_mut() {
         let mut total = 0;
         for &ch in &diff.data {
-            let (s, e) = store.spans[ch as usize];
+            let (s, e) = store.spans[id_to_slot(ch as u32)];
             total += e - s;
         }
         let mut data: Vec<char> = Vec::with_capacity(total);
         for &ch in &diff.data {
-            let (s, e) = store.spans[ch as usize];
+            let (s, e) = store.spans[id_to_slot(ch as u32)];
             data.extend(store.arena[s..e].chars());
         }
         diff.data = data;
@@ -560,6 +572,27 @@ impl GraphemePacker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arena_roundtrip_survives_the_surrogate_gap() {
+        // Line ids skip U+D800..U+DFFF on the encode side (slot 55296 becomes
+        // scalar 57344), so the decode must subtract the gap back. With 57,500
+        // unique lines the high ids sit past the gap; a decoder indexing by raw
+        // id either panics or rehydrates the wrong line.
+        let mut text1 = String::new();
+        for i in 0..57_500 {
+            text1.push_str(&format!("line {i}\n"));
+        }
+        let mut text2 = text1.clone();
+        text2.push_str("one more line\n");
+        let c1: Vec<char> = text1.chars().collect();
+        let c2: Vec<char> = text2.chars().collect();
+        let (p1, _p2, store) = lines_tochars_arena(&c1, &c2);
+        let mut diffs = vec![TDiff::new(0, p1.chars().collect::<Vec<char>>())];
+        chars_tolines_arena(&mut diffs, &store);
+        let rehydrated: String = diffs[0].data.iter().collect();
+        assert_eq!(rehydrated, text1);
+    }
 
     #[test]
     fn packs_to_one_line_agrees_with_the_arena() {
