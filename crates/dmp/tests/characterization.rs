@@ -63,4 +63,3 @@ fn patch_make_absorbs_margin_sized_equality() {
 fn edit_cost_defaults_to_zero() {
     assert_eq!(Dmp::new().edit_cost, 0);
 }
-
