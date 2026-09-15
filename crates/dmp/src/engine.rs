@@ -3,10 +3,10 @@
 // functions over `&[T: Eq]` — no Dmp state, no text; orchestration and
 // text materialization live in diff.rs.
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use web_time::Instant;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use web_time::Instant;
 
 // Chunk width for the common-run scans. Runs are scanned token by token
 // first — most probes (e.g. the bisect snake walk) mismatch within a couple
