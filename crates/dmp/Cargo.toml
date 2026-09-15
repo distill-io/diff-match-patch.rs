@@ -1,6 +1,6 @@
 [package]
 name = "diff_match_patch"
-version = "0.3.0"
+version = "0.3.1"
 authors = [
     "chandan <chandanmahi1998@gmail.com>",
     "ajit <ajit@distill.io>",
