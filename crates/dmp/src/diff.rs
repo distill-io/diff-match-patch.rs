@@ -441,9 +441,7 @@ fn compute<T: DiffToken>(
         }
     }
 
-    if deadline.is_some()
-        && (dmp.half_match_min_len == 0 || old.len() + new.len() >= dmp.half_match_min_len)
-    {
+    if deadline.is_some() {
         if let Some(hm) = engine::half_match(old, new) {
             // A half-match was found, send both pairs off for separate processing.
             let mid_common: Vec<char> = T::to_tokens(&old[hm.old_a..hm.old_a + hm.common]);

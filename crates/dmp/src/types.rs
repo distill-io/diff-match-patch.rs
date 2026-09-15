@@ -26,10 +26,6 @@ pub enum Segmentation {
 pub struct Dmp {
     // Number of seconds to map a diff before giving up (None for infinity).
     pub diff_timeout: Option<f32>,
-    /// Minimum combined input length (in tokens of the active granularity)
-    /// before `diff_main` may take the half-match speedup when a deadline is
-    /// set.
-    pub half_match_min_len: usize,
     // Cost of an empty edit operation in terms of edit characters.
     pub edit_cost: i32,
     /*How far to search for a match (0 = exact location, 1000+ = broad match).
@@ -262,7 +258,6 @@ impl Dmp {
         // it will give a new dmp object.
         Dmp {
             diff_timeout: Some(1.0),
-            half_match_min_len: 10_000,
             patch_delete_threshold: 0.5,
             edit_cost: 0,
             match_distance: 1000,

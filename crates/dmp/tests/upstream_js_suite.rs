@@ -51,7 +51,10 @@ fn upstream_diff_common_prefix() {
     assert_eq!(0, dmp.diff_common_prefix(&chars("abc"), &chars("xyz")));
 
     // Non-null case.
-    assert_eq!(4, dmp.diff_common_prefix(&chars("1234abcdef"), &chars("1234xyz")));
+    assert_eq!(
+        4,
+        dmp.diff_common_prefix(&chars("1234abcdef"), &chars("1234xyz"))
+    );
 
     // Whole case.
     assert_eq!(4, dmp.diff_common_prefix(&chars("1234"), &chars("1234xyz")));
@@ -64,7 +67,10 @@ fn upstream_diff_common_suffix() {
     assert_eq!(0, dmp.diff_common_suffix(&chars("abc"), &chars("xyz")));
 
     // Non-null case.
-    assert_eq!(4, dmp.diff_common_suffix(&chars("abcdef1234"), &chars("xyz1234")));
+    assert_eq!(
+        4,
+        dmp.diff_common_suffix(&chars("abcdef1234"), &chars("xyz1234"))
+    );
 
     // Whole case.
     assert_eq!(4, dmp.diff_common_suffix(&chars("1234"), &chars("xyz1234")));
@@ -83,12 +89,18 @@ fn upstream_diff_common_overlap() {
     assert_eq!(0, dmp.diff_common_overlap(&chars("123456"), &chars("abcd")));
 
     // Overlap.
-    assert_eq!(3, dmp.diff_common_overlap(&chars("123456xxx"), &chars("xxxabcd")));
+    assert_eq!(
+        3,
+        dmp.diff_common_overlap(&chars("123456xxx"), &chars("xxxabcd"))
+    );
 
     // Unicode.
     // Some overly clever languages (C#) may treat ligatures as equal to their
     // component letters.  E.g. U+FB01 == 'fi'
-    assert_eq!(0, dmp.diff_common_overlap(&chars("fi"), &chars("\u{fb01}i")));
+    assert_eq!(
+        0,
+        dmp.diff_common_overlap(&chars("fi"), &chars("\u{fb01}i"))
+    );
 }
 
 #[test]
@@ -98,7 +110,10 @@ fn upstream_diff_half_match() {
     // JS returns null for "no half-match"; the crate returns an empty Vec.
     let no_match: Vec<String> = vec![];
     // No match.
-    assert_eq!(no_match, dmp.diff_half_match(&chars("1234567890"), &chars("abcdef")));
+    assert_eq!(
+        no_match,
+        dmp.diff_half_match(&chars("1234567890"), &chars("abcdef"))
+    );
 
     assert_eq!(no_match, dmp.diff_half_match(&chars("12345"), &chars("23")));
 
@@ -126,17 +141,26 @@ fn upstream_diff_half_match() {
     // Multiple Matches.
     assert_eq!(
         svec(&["12123", "123121", "a", "z", "1234123451234"]),
-        dmp.diff_half_match(&chars("121231234123451234123121"), &chars("a1234123451234z"))
+        dmp.diff_half_match(
+            &chars("121231234123451234123121"),
+            &chars("a1234123451234z")
+        )
     );
 
     assert_eq!(
         svec(&["", "-=-=-=-=-=", "x", "", "x-=-=-=-=-=-=-="]),
-        dmp.diff_half_match(&chars("x-=-=-=-=-=-=-=-=-=-=-=-="), &chars("xx-=-=-=-=-=-=-="))
+        dmp.diff_half_match(
+            &chars("x-=-=-=-=-=-=-=-=-=-=-=-="),
+            &chars("xx-=-=-=-=-=-=-=")
+        )
     );
 
     assert_eq!(
         svec(&["-=-=-=-=-=", "", "", "y", "-=-=-=-=-=-=-=y"]),
-        dmp.diff_half_match(&chars("-=-=-=-=-=-=-=-=-=-=-=-=y"), &chars("-=-=-=-=-=-=-=yy"))
+        dmp.diff_half_match(
+            &chars("-=-=-=-=-=-=-=-=-=-=-=-=y"),
+            &chars("-=-=-=-=-=-=-=yy")
+        )
     );
 
     // Non-optimal halfmatch.
@@ -164,7 +188,10 @@ fn upstream_diff_lines_to_chars() {
             "\x02\x01\x02".to_string(),
             svec(&["", "alpha\n", "beta\n"])
         ),
-        dmp.diff_lines_tochars(&chars("alpha\nbeta\nalpha\n"), &chars("beta\nalpha\nbeta\n"))
+        dmp.diff_lines_tochars(
+            &chars("alpha\nbeta\nalpha\n"),
+            &chars("beta\nalpha\nbeta\n")
+        )
     );
 
     assert_eq!(
@@ -177,7 +204,11 @@ fn upstream_diff_lines_to_chars() {
     );
 
     assert_eq!(
-        ("\x01".to_string(), "\x02".to_string(), svec(&["", "a", "b"])),
+        (
+            "\x01".to_string(),
+            "\x02".to_string(),
+            svec(&["", "a", "b"])
+        ),
         dmp.diff_lines_tochars(&chars("a"), &chars("b"))
     );
 
@@ -206,7 +237,10 @@ fn upstream_diff_chars_to_lines() {
     // Convert chars up to lines.
     let mut diffs = vec![d(0, "\x01\x02\x01"), d(1, "\x02\x01\x02")];
     dmp.diff_chars_tolines(&mut diffs, &svec(&["", "alpha\n", "beta\n"]));
-    assert_eq!(vec![d(0, "alpha\nbeta\nalpha\n"), d(1, "beta\nalpha\nbeta\n")], diffs);
+    assert_eq!(
+        vec![d(0, "alpha\nbeta\nalpha\n"), d(1, "beta\nalpha\nbeta\n")],
+        diffs
+    );
 
     // More than 256 to reveal any 8-bit limitations.
     let n = 300;
@@ -270,7 +304,14 @@ fn upstream_diff_cleanup_merge() {
     assert_eq!(vec![d(1, "abc")], diffs);
 
     // Merge interweave.
-    diffs = vec![d(-1, "a"), d(1, "b"), d(-1, "c"), d(1, "d"), d(0, "e"), d(0, "f")];
+    diffs = vec![
+        d(-1, "a"),
+        d(1, "b"),
+        d(-1, "c"),
+        d(1, "d"),
+        d(0, "e"),
+        d(0, "f"),
+    ];
     dmp.diff_cleanup_merge(&mut diffs);
     assert_eq!(vec![d(-1, "ac"), d(1, "bd"), d(0, "ef")], diffs);
 
@@ -332,24 +373,37 @@ fn upstream_diff_cleanup_semantic_lossless() {
     ];
     dmp.diff_cleanup_semantic_lossless(&mut diffs);
     assert_eq!(
-        vec![d(0, "AAA\r\n\r\n"), d(1, "BBB\r\nDDD\r\n\r\n"), d(0, "BBB\r\nEEE")],
+        vec![
+            d(0, "AAA\r\n\r\n"),
+            d(1, "BBB\r\nDDD\r\n\r\n"),
+            d(0, "BBB\r\nEEE")
+        ],
         diffs
     );
 
     // Line boundaries.
     diffs = vec![d(0, "AAA\r\nBBB"), d(1, " DDD\r\nBBB"), d(0, " EEE")];
     dmp.diff_cleanup_semantic_lossless(&mut diffs);
-    assert_eq!(vec![d(0, "AAA\r\n"), d(1, "BBB DDD\r\n"), d(0, "BBB EEE")], diffs);
+    assert_eq!(
+        vec![d(0, "AAA\r\n"), d(1, "BBB DDD\r\n"), d(0, "BBB EEE")],
+        diffs
+    );
 
     // Word boundaries.
     diffs = vec![d(0, "The c"), d(1, "ow and the c"), d(0, "at.")];
     dmp.diff_cleanup_semantic_lossless(&mut diffs);
-    assert_eq!(vec![d(0, "The "), d(1, "cow and the "), d(0, "cat.")], diffs);
+    assert_eq!(
+        vec![d(0, "The "), d(1, "cow and the "), d(0, "cat.")],
+        diffs
+    );
 
     // Alphanumeric boundaries.
     diffs = vec![d(0, "The-c"), d(1, "ow-and-the-c"), d(0, "at.")];
     dmp.diff_cleanup_semantic_lossless(&mut diffs);
-    assert_eq!(vec![d(0, "The-"), d(1, "cow-and-the-"), d(0, "cat.")], diffs);
+    assert_eq!(
+        vec![d(0, "The-"), d(1, "cow-and-the-"), d(0, "cat.")],
+        diffs
+    );
 
     // Hitting the start.
     diffs = vec![d(0, "a"), d(-1, "a"), d(0, "ax")];
@@ -364,7 +418,10 @@ fn upstream_diff_cleanup_semantic_lossless() {
     // Sentence boundaries.
     diffs = vec![d(0, "The xxx. The "), d(1, "zzz. The "), d(0, "yyy.")];
     dmp.diff_cleanup_semantic_lossless(&mut diffs);
-    assert_eq!(vec![d(0, "The xxx."), d(1, " The zzz."), d(0, " The yyy.")], diffs);
+    assert_eq!(
+        vec![d(0, "The xxx."), d(1, " The zzz."), d(0, " The yyy.")],
+        diffs
+    );
 }
 
 #[test]
@@ -384,7 +441,10 @@ fn upstream_diff_cleanup_semantic() {
     // No elimination #2.
     diffs = vec![d(-1, "abc"), d(1, "ABC"), d(0, "1234"), d(-1, "wxyz")];
     dmp.diff_cleanup_semantic(&mut diffs);
-    assert_eq!(vec![d(-1, "abc"), d(1, "ABC"), d(0, "1234"), d(-1, "wxyz")], diffs);
+    assert_eq!(
+        vec![d(-1, "abc"), d(1, "ABC"), d(0, "1234"), d(-1, "wxyz")],
+        diffs
+    );
 
     // Simple elimination.
     diffs = vec![d(-1, "a"), d(0, "b"), d(-1, "c")];
@@ -414,7 +474,10 @@ fn upstream_diff_cleanup_semantic() {
     // Word boundaries.
     diffs = vec![d(0, "The c"), d(-1, "ow and the c"), d(0, "at.")];
     dmp.diff_cleanup_semantic(&mut diffs);
-    assert_eq!(vec![d(0, "The "), d(-1, "cow and the "), d(0, "cat.")], diffs);
+    assert_eq!(
+        vec![d(0, "The "), d(-1, "cow and the "), d(0, "cat.")],
+        diffs
+    );
 
     // No overlap elimination.
     diffs = vec![d(-1, "abcxx"), d(1, "xxdef")];
@@ -459,21 +522,39 @@ fn upstream_diff_cleanup_efficiency() {
     let mut dmp = Dmp::new();
     // Cleanup operationally trivial equalities.
     dmp.edit_cost = 4; // JS default Diff_EditCost = 4; crate default is 0 (documented deviation)
-    // Null case.
+                       // Null case.
     let mut diffs: Vec<Diff> = vec![];
     dmp.diff_cleanup_efficiency(&mut diffs);
     assert_eq!(Vec::<Diff>::new(), diffs);
 
     // No elimination.
-    diffs = vec![d(-1, "ab"), d(1, "12"), d(0, "wxyz"), d(-1, "cd"), d(1, "34")];
+    diffs = vec![
+        d(-1, "ab"),
+        d(1, "12"),
+        d(0, "wxyz"),
+        d(-1, "cd"),
+        d(1, "34"),
+    ];
     dmp.diff_cleanup_efficiency(&mut diffs);
     assert_eq!(
-        vec![d(-1, "ab"), d(1, "12"), d(0, "wxyz"), d(-1, "cd"), d(1, "34")],
+        vec![
+            d(-1, "ab"),
+            d(1, "12"),
+            d(0, "wxyz"),
+            d(-1, "cd"),
+            d(1, "34")
+        ],
         diffs
     );
 
     // Four-edit elimination.
-    diffs = vec![d(-1, "ab"), d(1, "12"), d(0, "xyz"), d(-1, "cd"), d(1, "34")];
+    diffs = vec![
+        d(-1, "ab"),
+        d(1, "12"),
+        d(0, "xyz"),
+        d(-1, "cd"),
+        d(1, "34"),
+    ];
     dmp.diff_cleanup_efficiency(&mut diffs);
     assert_eq!(vec![d(-1, "abxyzcd"), d(1, "12xyz34")], diffs);
 
@@ -497,7 +578,13 @@ fn upstream_diff_cleanup_efficiency() {
 
     // High cost elimination.
     dmp.edit_cost = 5;
-    diffs = vec![d(-1, "ab"), d(1, "12"), d(0, "wxyz"), d(-1, "cd"), d(1, "34")];
+    diffs = vec![
+        d(-1, "ab"),
+        d(1, "12"),
+        d(0, "wxyz"),
+        d(-1, "cd"),
+        d(1, "34"),
+    ];
     dmp.diff_cleanup_efficiency(&mut diffs);
     assert_eq!(vec![d(-1, "abwxyzcd"), d(1, "12wxyz34")], diffs);
     // JS restores the shared global dmp (Diff_EditCost = 4); moot with a
@@ -580,10 +667,16 @@ fn upstream_diff_delta() {
     // Verify pool of unchanged characters.
     diffs = vec![d(1, "A-Z a-z 0-9 - _ . ! ~ * ' ( ) ; / ? : @ & = + $ , # ")];
     let text2 = dmp.diff_text2(&mut diffs);
-    assert_eq!("A-Z a-z 0-9 - _ . ! ~ * ' ( ) ; / ? : @ & = + $ , # ", text2);
+    assert_eq!(
+        "A-Z a-z 0-9 - _ . ! ~ * ' ( ) ; / ? : @ & = + $ , # ",
+        text2
+    );
 
     delta = dmp.diff_todelta(&mut diffs);
-    assert_eq!("+A-Z a-z 0-9 - _ . ! ~ * ' ( ) ; / ? : @ & = + $ , # ", delta);
+    assert_eq!(
+        "+A-Z a-z 0-9 - _ . ! ~ * ' ( ) ; / ? : @ & = + $ , # ",
+        delta
+    );
 
     // Convert delta string into a diff.
     assert_eq!(diffs, dmp.diff_from_delta("", &delta));
@@ -747,7 +840,7 @@ fn upstream_diff_main() {
     // Perform a real diff.
     // Switch off the timeout.
     dmp.diff_timeout = None; // JS Diff_Timeout = 0 maps to None (no deadline).
-    // Simple cases.
+                             // Simple cases.
     assert_eq!(vec![d(-1, "a"), d(1, "b")], dmp.diff_main("a", "b", false));
 
     assert_eq!(
@@ -762,13 +855,26 @@ fn upstream_diff_main() {
     );
 
     assert_eq!(
-        vec![d(-1, "a"), d(1, "\u{0680}"), d(0, "x"), d(-1, "\t"), d(1, "\0")],
+        vec![
+            d(-1, "a"),
+            d(1, "\u{0680}"),
+            d(0, "x"),
+            d(-1, "\t"),
+            d(1, "\0")
+        ],
         dmp.diff_main("ax\t", "\u{0680}x\0", false)
     );
 
     // Overlaps.
     assert_eq!(
-        vec![d(-1, "1"), d(0, "a"), d(-1, "y"), d(0, "b"), d(-1, "2"), d(1, "xab")],
+        vec![
+            d(-1, "1"),
+            d(0, "a"),
+            d(-1, "y"),
+            d(0, "b"),
+            d(-1, "2"),
+            d(1, "xab")
+        ],
         dmp.diff_main("1ayb2", "abxab", false)
     );
 
@@ -789,7 +895,11 @@ fn upstream_diff_main() {
             d(0, "efghijklmnopqrs"),
             d(-1, "EFGHIJKLMNOefg")
         ],
-        dmp.diff_main("ABCDa=bcd=efghijklmnopqrsEFGHIJKLMNOefg", "a-bcd-efghijklmnopqrs", false)
+        dmp.diff_main(
+            "ABCDa=bcd=efghijklmnopqrsEFGHIJKLMNOefg",
+            "a-bcd-efghijklmnopqrs",
+            false
+        )
     );
 
     // Large equality.
@@ -801,7 +911,11 @@ fn upstream_diff_main() {
             d(0, " [[Pennsylvania]]"),
             d(-1, " and [[New")
         ],
-        dmp.diff_main("a [[Pennsylvania]] and [[New", " and [[Pennsylvania]]", false)
+        dmp.diff_main(
+            "a [[Pennsylvania]] and [[New",
+            " and [[Pennsylvania]]",
+            false
+        )
     );
 
     // Timeout.
@@ -876,30 +990,54 @@ fn upstream_match_bitap() {
     assert_eq!(5, dmp.match_bitap(&chars("abcdefghijk"), &chars("fgh"), 0));
 
     // Fuzzy matches.
-    assert_eq!(4, dmp.match_bitap(&chars("abcdefghijk"), &chars("efxhi"), 0));
+    assert_eq!(
+        4,
+        dmp.match_bitap(&chars("abcdefghijk"), &chars("efxhi"), 0)
+    );
 
-    assert_eq!(2, dmp.match_bitap(&chars("abcdefghijk"), &chars("cdefxyhijk"), 5));
+    assert_eq!(
+        2,
+        dmp.match_bitap(&chars("abcdefghijk"), &chars("cdefxyhijk"), 5)
+    );
 
     assert_eq!(-1, dmp.match_bitap(&chars("abcdefghijk"), &chars("bxy"), 1));
 
     // Overflow.
-    assert_eq!(2, dmp.match_bitap(&chars("123456789xx0"), &chars("3456789x0"), 2));
+    assert_eq!(
+        2,
+        dmp.match_bitap(&chars("123456789xx0"), &chars("3456789x0"), 2)
+    );
 
     // Threshold test.
     dmp.match_threshold = 0.4;
-    assert_eq!(4, dmp.match_bitap(&chars("abcdefghijk"), &chars("efxyhi"), 1));
+    assert_eq!(
+        4,
+        dmp.match_bitap(&chars("abcdefghijk"), &chars("efxyhi"), 1)
+    );
 
     dmp.match_threshold = 0.3;
-    assert_eq!(-1, dmp.match_bitap(&chars("abcdefghijk"), &chars("efxyhi"), 1));
+    assert_eq!(
+        -1,
+        dmp.match_bitap(&chars("abcdefghijk"), &chars("efxyhi"), 1)
+    );
 
     dmp.match_threshold = 0.0;
-    assert_eq!(1, dmp.match_bitap(&chars("abcdefghijk"), &chars("bcdef"), 1));
+    assert_eq!(
+        1,
+        dmp.match_bitap(&chars("abcdefghijk"), &chars("bcdef"), 1)
+    );
     dmp.match_threshold = 0.5;
 
     // Multiple select.
-    assert_eq!(0, dmp.match_bitap(&chars("abcdexyzabcde"), &chars("abccde"), 3));
+    assert_eq!(
+        0,
+        dmp.match_bitap(&chars("abcdexyzabcde"), &chars("abccde"), 3)
+    );
 
-    assert_eq!(8, dmp.match_bitap(&chars("abcdexyzabcde"), &chars("abccde"), 5));
+    assert_eq!(
+        8,
+        dmp.match_bitap(&chars("abcdexyzabcde"), &chars("abccde"), 5)
+    );
 
     // Distance test.
     dmp.match_distance = 10; // Strict location.
@@ -942,7 +1080,11 @@ fn upstream_match_main() {
     // Complex match.
     assert_eq!(
         4,
-        dmp.match_main("I am the very model of a modern major general.", " that berry ", 5)
+        dmp.match_main(
+            "I am the very model of a modern major general.",
+            " that berry ",
+            5
+        )
     );
 
     // Test null inputs: skipped, untypable in Rust (see file header).
@@ -1025,14 +1167,25 @@ fn upstream_patch_to_text() {
 fn upstream_patch_add_context() {
     let mut dmp = Dmp::new();
     dmp.patch_margin = 4;
-    let mut p = dmp.patch_from_text("@@ -21,4 +21,10 @@\n-jump\n+somersault\n".to_string())[0].clone();
-    dmp.patch_add_context(&mut p, &mut chars("The quick brown fox jumps over the lazy dog."));
-    assert_eq!("@@ -17,12 +17,18 @@\n fox \n-jump\n+somersault\n s ov\n", p.to_string());
+    let mut p =
+        dmp.patch_from_text("@@ -21,4 +21,10 @@\n-jump\n+somersault\n".to_string())[0].clone();
+    dmp.patch_add_context(
+        &mut p,
+        &mut chars("The quick brown fox jumps over the lazy dog."),
+    );
+    assert_eq!(
+        "@@ -17,12 +17,18 @@\n fox \n-jump\n+somersault\n s ov\n",
+        p.to_string()
+    );
 
     // Same, but not enough trailing context.
-    let mut p = dmp.patch_from_text("@@ -21,4 +21,10 @@\n-jump\n+somersault\n".to_string())[0].clone();
+    let mut p =
+        dmp.patch_from_text("@@ -21,4 +21,10 @@\n-jump\n+somersault\n".to_string())[0].clone();
     dmp.patch_add_context(&mut p, &mut chars("The quick brown fox jumps."));
-    assert_eq!("@@ -17,10 +17,16 @@\n fox \n-jump\n+somersault\n s.\n", p.to_string());
+    assert_eq!(
+        "@@ -17,10 +17,16 @@\n fox \n-jump\n+somersault\n s.\n",
+        p.to_string()
+    );
 
     // Same, but not enough leading context.
     let mut p = dmp.patch_from_text("@@ -3 +3,2 @@\n-e\n+at\n".to_string())[0].clone();
@@ -1057,7 +1210,7 @@ fn upstream_patch_make() {
     // patch_make runs diff_cleanup_efficiency internally, so the JS
     // constructor default matters here.
     dmp.edit_cost = 4; // JS default Diff_EditCost = 4; crate default is 0 (documented deviation)
-    // Null case.
+                       // Null case.
     let mut patches = dmp.patch_make1("", "");
     assert_eq!("", dmp.patch_to_text(&mut patches));
 
@@ -1095,7 +1248,10 @@ fn upstream_patch_make() {
     );
 
     // Character decoding.
-    let diffs = vec![d(-1, "`1234567890-=[]\\;',./"), d(1, "~!@#$%^&*()_+{}|:\"<>?")];
+    let diffs = vec![
+        d(-1, "`1234567890-=[]\\;',./"),
+        d(1, "~!@#$%^&*()_+{}|:\"<>?"),
+    ];
     assert_eq!(
         diffs,
         dmp.patch_from_text(
@@ -1166,7 +1322,7 @@ fn upstream_patch_split_max() {
 fn upstream_patch_add_padding() {
     let mut dmp = Dmp::new();
     dmp.edit_cost = 4; // JS default Diff_EditCost = 4; crate default is 0 (documented deviation)
-    // Both edges full.
+                       // Both edges full.
     let mut patches = dmp.patch_make1("", "test");
     assert_eq!("@@ -0,0 +1,4 @@\n+test\n", dmp.patch_to_text(&mut patches));
     dmp.patch_add_padding(&mut patches);
@@ -1177,7 +1333,10 @@ fn upstream_patch_add_padding() {
 
     // Both edges partial.
     let mut patches = dmp.patch_make1("XY", "XtestY");
-    assert_eq!("@@ -1,2 +1,6 @@\n X\n+test\n Y\n", dmp.patch_to_text(&mut patches));
+    assert_eq!(
+        "@@ -1,2 +1,6 @@\n X\n+test\n Y\n",
+        dmp.patch_to_text(&mut patches)
+    );
     dmp.patch_add_padding(&mut patches);
     assert_eq!(
         "@@ -2,8 +2,12 @@\n %02%03%04X\n+test\n Y%01%02%03\n",
@@ -1186,9 +1345,15 @@ fn upstream_patch_add_padding() {
 
     // Both edges none.
     let mut patches = dmp.patch_make1("XXXXYYYY", "XXXXtestYYYY");
-    assert_eq!("@@ -1,8 +1,12 @@\n XXXX\n+test\n YYYY\n", dmp.patch_to_text(&mut patches));
+    assert_eq!(
+        "@@ -1,8 +1,12 @@\n XXXX\n+test\n YYYY\n",
+        dmp.patch_to_text(&mut patches)
+    );
     dmp.patch_add_padding(&mut patches);
-    assert_eq!("@@ -5,8 +5,12 @@\n XXXX\n+test\n YYYY\n", dmp.patch_to_text(&mut patches));
+    assert_eq!(
+        "@@ -5,8 +5,12 @@\n XXXX\n+test\n YYYY\n",
+        dmp.patch_to_text(&mut patches)
+    );
 }
 
 #[test]
@@ -1210,21 +1375,36 @@ fn upstream_patch_apply() {
     );
     let results = dmp.patch_apply(&mut patches, "The quick brown fox jumps over the lazy dog.");
     assert_eq!(
-        (chars("That quick brown fox jumped over a lazy dog."), vec![true, true]),
+        (
+            chars("That quick brown fox jumped over a lazy dog."),
+            vec![true, true]
+        ),
         results
     );
 
     // Partial match.
-    let results = dmp.patch_apply(&mut patches, "The quick red rabbit jumps over the tired tiger.");
+    let results = dmp.patch_apply(
+        &mut patches,
+        "The quick red rabbit jumps over the tired tiger.",
+    );
     assert_eq!(
-        (chars("That quick red rabbit jumped over a tired tiger."), vec![true, true]),
+        (
+            chars("That quick red rabbit jumped over a tired tiger."),
+            vec![true, true]
+        ),
         results
     );
 
     // Failed match.
-    let results = dmp.patch_apply(&mut patches, "I am the very model of a modern major general.");
+    let results = dmp.patch_apply(
+        &mut patches,
+        "I am the very model of a modern major general.",
+    );
     assert_eq!(
-        (chars("I am the very model of a modern major general."), vec![false, false]),
+        (
+            chars("I am the very model of a modern major general."),
+            vec![false, false]
+        ),
         results
     );
 
