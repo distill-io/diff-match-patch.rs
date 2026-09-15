@@ -158,10 +158,7 @@ pub(crate) fn find_sub<T: Eq>(hay: &[T], needle: &[T], from: usize) -> Option<us
             // Classic KMP single-steps through every position that cannot
             // start a match; hunt the next candidate with the chunked scan
             // instead (identical positions skipped, O(n+m) preserved).
-            match skip_to(hay, i + 1, &needle[0]) {
-                Some(j) => i = j,
-                None => return None,
-            }
+            i = skip_to(hay, i + 1, &needle[0])?;
         } else {
             len = kmp.get_or_insert_with(|| Kmp::new(needle)).fail(len);
         }

@@ -315,7 +315,7 @@ pub fn test_diff_words_tochars() {
     let (chars1, chars2, hash_arr) = dmp.diff_words_tochars(&old_string, &new_string);
     let mut res_diffs = dmp.diff_main(&chars1, &chars2, true);
     dmp.diff_chars_tolines(&mut res_diffs, &hash_arr);
-    println!("{:?}", &res_diffs);
+    println!("{:?}", res_diffs);
     assert_eq!(diff_arr, res_diffs);
 }
 
