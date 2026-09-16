@@ -3,7 +3,10 @@
 // functions over `&[T: Eq]` — no Dmp state, no text; orchestration and
 // text materialization live in diff.rs.
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use web_time::Instant;
 
 // Chunk width for the common-run scans. Runs are scanned token by token
 // first — most probes (e.g. the bisect snake walk) mismatch within a couple
@@ -158,10 +161,7 @@ pub(crate) fn find_sub<T: Eq>(hay: &[T], needle: &[T], from: usize) -> Option<us
             // Classic KMP single-steps through every position that cannot
             // start a match; hunt the next candidate with the chunked scan
             // instead (identical positions skipped, O(n+m) preserved).
-            match skip_to(hay, i + 1, &needle[0]) {
-                Some(j) => i = j,
-                None => return None,
-            }
+            i = skip_to(hay, i + 1, &needle[0])?;
         } else {
             len = kmp.get_or_insert_with(|| Kmp::new(needle)).fail(len);
         }

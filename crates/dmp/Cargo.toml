@@ -1,6 +1,6 @@
 [package]
 name = "diff_match_patch"
-version = "0.3.0"
+version = "0.3.1"
 authors = [
     "chandan <chandanmahi1998@gmail.com>",
     "ajit <ajit@distill.io>",
@@ -35,6 +35,12 @@ grapheme = ["dep:unicode-segmentation"]
 [dependencies]
 percent-encoding = "2"
 unicode-segmentation = { version = "1", optional = true }
+
+# std::time::Instant::now() panics on wasm32-unknown-unknown ("time not implemented");
+# web-time backs it with performance.now() there and re-exports std::time verbatim on
+# every other target, so the deadline machinery works identically everywhere.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+web-time = "1"
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -257,7 +257,7 @@ impl Dmp {
     pub fn new() -> Self {
         // it will give a new dmp object.
         Dmp {
-            diff_timeout: None,
+            diff_timeout: Some(1.0),
             patch_delete_threshold: 0.5,
             edit_cost: 0,
             match_distance: 1000,

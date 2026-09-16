@@ -4,7 +4,12 @@
 
 use crate::engine;
 use crate::types::{Diff, DiffToken, Dmp, TDiff};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use std::time::Instant;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use web_time::Instant;
 
 // The historic public API takes &Vec/&mut Vec/&String; frozen by the
 // drop-in compatibility contract.
@@ -441,8 +446,6 @@ fn compute<T: DiffToken>(
         }
     }
 
-    // Check to see if the problem can be split in two (only when a deadline is
-    // set: half-match trades optimality for speed).
     if deadline.is_some() {
         if let Some(hm) = engine::half_match(old, new) {
             // A half-match was found, send both pairs off for separate processing.

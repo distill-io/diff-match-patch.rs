@@ -1,9 +1,12 @@
 //! Golden-reference tests: validate the crate against vectors emitted by the vendored
 //! googlediff oracle (oracle/vendor/, regenerate with `node oracle/generate.mjs`).
 //!
-//! Config parity: `Dmp::new()` defaults (diff_timeout None, edit_cost 0, margin 4,
-//! maxbits 32, thresholds 0.5, distance 1000) equal the generator's oracle settings,
-//! so plain `Dmp::new()` is the correct configuration for every test here.
+//! Config parity: the oracle generates with `Diff_Timeout = 0` (no deadline, no
+//! half-match) for determinism, while the crate DEFAULT is `Some(1.0)` to match
+//! upstream's default. Every test here overrides to `diff_timeout: None` — the
+//! faithful mapping of the oracle's `Diff_Timeout = 0` — via [`oracle_dmp`]. All
+//! other defaults (edit_cost 0, margin 4, maxbits 32, thresholds 0.5, distance
+//! 1000) equal the generator's settings.
 //!
 //! Known deviations from the oracle are pinned in tests/characterization.rs, not here.
 
@@ -48,6 +51,14 @@ fn corpus() -> Vec<Case> {
     c.cases
 }
 
+/// A `Dmp` configured like the oracle: no deadline, half-match disabled.
+fn oracle_dmp() -> Dmp {
+    Dmp {
+        diff_timeout: None,
+        ..Dmp::new()
+    }
+}
+
 fn to_tuples(diffs: &[Diff]) -> Vec<(i32, String)> {
     diffs
         .iter()
@@ -64,7 +75,7 @@ fn from_tuples(rows: &[(i32, String)]) -> Vec<Diff> {
 #[test]
 fn golden_diff_main() {
     for c in corpus() {
-        let got = to_tuples(&Dmp::new().diff_main(&c.text1, &c.text2, true));
+        let got = to_tuples(&oracle_dmp().diff_main(&c.text1, &c.text2, true));
         assert_eq!(got, c.diff, "diff mismatch in case '{}'", c.name);
     }
 }
@@ -73,7 +84,7 @@ fn golden_diff_main() {
 fn golden_diff_cleanup_semantic() {
     for c in corpus() {
         let mut diffs = from_tuples(&c.diff);
-        Dmp::new().diff_cleanup_semantic(&mut diffs);
+        oracle_dmp().diff_cleanup_semantic(&mut diffs);
         assert_eq!(
             to_tuples(&diffs),
             c.diff_semantic,
@@ -88,7 +99,7 @@ fn golden_delta_encode() {
     for c in corpus() {
         let mut diffs = from_tuples(&c.diff);
         assert_eq!(
-            Dmp::new().diff_todelta(&mut diffs),
+            oracle_dmp().diff_todelta(&mut diffs),
             c.delta,
             "delta mismatch in case '{}'",
             c.name
@@ -99,7 +110,7 @@ fn golden_delta_encode() {
 #[test]
 fn golden_delta_decode() {
     for c in corpus() {
-        let diffs = Dmp::new().diff_from_delta(&c.text1, &c.delta);
+        let diffs = oracle_dmp().diff_from_delta(&c.text1, &c.delta);
         assert_eq!(
             to_tuples(&diffs),
             c.diff,
@@ -112,7 +123,7 @@ fn golden_delta_decode() {
 #[test]
 fn golden_patch_make() {
     for c in corpus() {
-        let mut d = Dmp::new();
+        let mut d = oracle_dmp();
         let mut patches = d.patch_make1(&c.text1, &c.text2);
         assert_eq!(
             d.patch_to_text(&mut patches),
@@ -126,7 +137,7 @@ fn golden_patch_make() {
 #[test]
 fn golden_patch_text_roundtrip() {
     for c in corpus() {
-        let mut d = Dmp::new();
+        let mut d = oracle_dmp();
         let mut patches = d.patch_from_text(c.patch_text.clone());
         assert_eq!(
             d.patch_to_text(&mut patches),
@@ -140,7 +151,7 @@ fn golden_patch_text_roundtrip() {
 #[test]
 fn golden_patch_apply() {
     for c in corpus() {
-        let mut d = Dmp::new();
+        let mut d = oracle_dmp();
         let mut patches = d.patch_from_text(c.patch_text.clone());
         let (applied, results) = d.patch_apply(&mut patches, &c.apply_to);
         let applied: String = applied.into_iter().collect();
