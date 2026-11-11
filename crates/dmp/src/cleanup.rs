@@ -16,73 +16,7 @@ impl Dmp {
     /// Args:
     /// diffs: Vectors of diff object.
     pub(crate) fn diff_cleanup_semantic_impl(&mut self, diffs: &mut Vec<TDiff>) {
-        let mut changes = false;
-        let mut equalities: Vec<i32> = vec![]; // Stack of indices where equalities are found.
-        let mut last_equality: Vec<char> = vec![]; // Always equal to diffs[equalities[-1]][1]
-        let mut pointer: i32 = 0; // Index of current position.
-                                  // Number of chars that changed prior to the equality.
-        let mut length_insertions1 = 0;
-        let mut length_deletions1 = 0;
-        // Number of chars that changed after the equality.
-        let mut length_insertions2 = 0;
-        let mut length_deletions2 = 0;
-        while (pointer as usize) < diffs.len() {
-            if diffs[pointer as usize].operation == 0 {
-                // Equality found.
-                equalities.push(pointer);
-                length_insertions1 = length_insertions2;
-                length_insertions2 = 0;
-                length_deletions1 = length_deletions2;
-                length_deletions2 = 0;
-                last_equality = diffs[pointer as usize].data.clone();
-            } else {
-                // An insertion or deletion.
-                if diffs[pointer as usize].operation == 1 {
-                    length_insertions2 += diffs[pointer as usize].data.len() as i32;
-                } else {
-                    length_deletions2 += diffs[pointer as usize].data.len() as i32;
-                    // Eliminate an equality that is smaller or equal to the edits on both
-                    // sides of it.
-                }
-                let last_equality_len = last_equality.len() as i32;
-                if last_equality_len > 0
-                    && last_equality_len <= max(length_insertions1, length_deletions1)
-                    && last_equality_len <= max(length_insertions2, length_deletions2)
-                {
-                    // Duplicate record.
-                    diffs.insert(
-                        equalities[equalities.len() - 1] as usize,
-                        TDiff::new(-1, last_equality.clone()),
-                    );
-                    // Change second copy to insert.
-                    diffs[equalities[equalities.len() - 1] as usize + 1] = TDiff::new(
-                        1,
-                        diffs[equalities[equalities.len() - 1] as usize + 1]
-                            .data
-                            .clone(),
-                    );
-                    // Throw away the equality we just deleted.
-                    equalities.pop();
-                    // Throw away the previous equality (it needs to be reevaluated).
-                    if !equalities.is_empty() {
-                        equalities.pop();
-                    }
-                    if !equalities.is_empty() {
-                        pointer = equalities[equalities.len() - 1];
-                    } else {
-                        pointer = -1;
-                    }
-                    // Reset the counters.
-                    length_insertions1 = 0;
-                    length_deletions1 = 0;
-                    length_insertions2 = 0;
-                    length_deletions2 = 0;
-                    last_equality = vec![];
-                    changes = true;
-                }
-            }
-            pointer += 1;
-        }
+        let changes = eliminate_small_equalities(diffs);
         // Normalize the diff.
         if changes {
             self.diff_cleanup_merge_impl(diffs);
@@ -91,7 +25,7 @@ impl Dmp {
 
         let mut overlap_length1: i32;
         let mut overlap_length2: i32;
-        pointer = 1;
+        let mut pointer: i32 = 1;
         while (pointer as usize) < diffs.len() {
             if diffs[pointer as usize - 1].operation == -1 && diffs[pointer as usize].operation == 1
             {
@@ -684,6 +618,85 @@ impl Dmp {
     }
 }
 
+/// An equality still standing, with the edit lengths between it and the next one.
+struct Standing {
+    index: usize,
+    len: i32,
+    insertions: i32,
+    deletions: i32,
+}
+
+/// Turn every equality no longer than the edits on both sides of it into a
+/// delete plus an insert. Returns whether any was turned.
+///
+/// Same result as rescanning from two equalities back after each one, in one
+/// pass: an equality's left side is fixed while it stands, and its right side
+/// only grows, so it needs rechecking only when that side grows.
+fn eliminate_small_equalities(diffs: &mut Vec<TDiff>) -> bool {
+    let mut standing: Vec<Standing> = vec![];
+    // Edit lengths before the first standing equality.
+    let mut head = (0i32, 0i32);
+    let mut eliminated: Vec<usize> = vec![];
+    for (index, diff) in diffs.iter().enumerate() {
+        let len = diff.data.len() as i32;
+        if diff.operation == 0 {
+            standing.push(Standing {
+                index,
+                len,
+                insertions: 0,
+                deletions: 0,
+            });
+            continue;
+        }
+        let (insertions, deletions) = match standing.last_mut() {
+            Some(top) => (&mut top.insertions, &mut top.deletions),
+            None => (&mut head.0, &mut head.1),
+        };
+        if diff.operation == 1 {
+            *insertions += len;
+        } else {
+            *deletions += len;
+        }
+        while let Some(top) = standing.pop() {
+            let before = match standing.last() {
+                Some(previous) => (previous.insertions, previous.deletions),
+                None => head,
+            };
+            if top.len == 0
+                || top.len > max(before.0, before.1)
+                || top.len > max(top.insertions, top.deletions)
+            {
+                standing.push(top);
+                break;
+            }
+            eliminated.push(top.index);
+            let (insertions, deletions) = match standing.last_mut() {
+                Some(previous) => (&mut previous.insertions, &mut previous.deletions),
+                None => (&mut head.0, &mut head.1),
+            };
+            *insertions += top.insertions + top.len;
+            *deletions += top.deletions + top.len;
+        }
+    }
+    if eliminated.is_empty() {
+        return false;
+    }
+    eliminated.sort_unstable();
+    let mut out: Vec<TDiff> = Vec::with_capacity(diffs.len() + eliminated.len());
+    let mut next = eliminated.iter().copied().peekable();
+    for (index, diff) in diffs.drain(..).enumerate() {
+        if next.peek() == Some(&index) {
+            next.next();
+            out.push(TDiff::new(-1, diff.data.clone()));
+            out.push(TDiff::new(1, diff.data));
+        } else {
+            out.push(diff);
+        }
+    }
+    *diffs = out;
+    true
+}
+
 /// Run a token-space cleanup pass on public `String`-carrying diffs: decode
 /// each piece to a char run once, run the pass, re-encode once. External
 /// callers pay one round-trip instead of the per-operation decodes the passes
@@ -711,4 +724,112 @@ fn dispatch(dmp: &mut Dmp, diffs: &mut Vec<Diff>, pass: fn(&mut Dmp, &mut Vec<TD
         .collect();
     pass(dmp, &mut tokens);
     *diffs = tokens.into_iter().map(TDiff::into_diff).collect();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The loop the one-pass form replaced: after each elimination, rescan
+    /// from two equalities back.
+    fn eliminate_by_rescanning(diffs: &mut Vec<TDiff>) -> bool {
+        let mut changes = false;
+        let mut equalities: Vec<i32> = vec![];
+        let mut last_equality: Vec<char> = vec![];
+        let mut pointer: i32 = 0;
+        let (mut insertions1, mut deletions1) = (0, 0);
+        let (mut insertions2, mut deletions2) = (0, 0);
+        while (pointer as usize) < diffs.len() {
+            let len = diffs[pointer as usize].data.len() as i32;
+            if diffs[pointer as usize].operation == 0 {
+                equalities.push(pointer);
+                (insertions1, deletions1) = (insertions2, deletions2);
+                (insertions2, deletions2) = (0, 0);
+                last_equality = diffs[pointer as usize].data.clone();
+            } else {
+                if diffs[pointer as usize].operation == 1 {
+                    insertions2 += len;
+                } else {
+                    deletions2 += len;
+                }
+                let equality_len = last_equality.len() as i32;
+                if equality_len > 0
+                    && equality_len <= max(insertions1, deletions1)
+                    && equality_len <= max(insertions2, deletions2)
+                {
+                    let at = equalities[equalities.len() - 1] as usize;
+                    diffs.insert(at, TDiff::new(-1, last_equality.clone()));
+                    diffs[at + 1].operation = 1;
+                    equalities.pop();
+                    equalities.pop();
+                    pointer = equalities.last().copied().unwrap_or(-1);
+                    (insertions1, deletions1) = (0, 0);
+                    (insertions2, deletions2) = (0, 0);
+                    last_equality = vec![];
+                    changes = true;
+                }
+            }
+            pointer += 1;
+        }
+        changes
+    }
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn below(&mut self, bound: u64) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((self.0 >> 33) % bound) as usize
+        }
+    }
+
+    // Any list the public cleanup accepts: empty pieces and repeated ops included.
+    fn random_diffs(rng: &mut Lcg) -> Vec<(i32, Vec<char>)> {
+        let max_len = [1, 2, 4, 9][rng.below(4)];
+        (0..rng.below(14))
+            .map(|_| {
+                let operation = [-1, 0, 1, 0][rng.below(4)];
+                let len = rng.below(max_len + 1);
+                (
+                    operation,
+                    (0..len).map(|_| ['a', 'b'][rng.below(2)]).collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn tokens(pieces: &[(i32, Vec<char>)]) -> Vec<TDiff> {
+        pieces
+            .iter()
+            .map(|(operation, data)| TDiff::new(*operation, data.clone()))
+            .collect()
+    }
+
+    fn pieces(diffs: Vec<TDiff>) -> Vec<(i32, Vec<char>)> {
+        diffs.into_iter().map(|d| (d.operation, d.data)).collect()
+    }
+
+    #[test]
+    fn one_pass_elimination_matches_rescanning() {
+        let mut rng = Lcg(1);
+        // Inputs that lose one equality, and inputs that lose several.
+        let (mut single, mut several) = (0, 0);
+        for _ in 0..50_000 {
+            let input = random_diffs(&mut rng);
+            let (mut expected, mut actual) = (tokens(&input), tokens(&input));
+            let changed = eliminate_by_rescanning(&mut expected);
+            assert_eq!(
+                eliminate_small_equalities(&mut actual),
+                changed,
+                "{input:?}"
+            );
+            let eliminated = actual.len() - input.len();
+            assert_eq!(pieces(actual), pieces(expected), "{input:?}");
+            single += (eliminated == 1) as usize;
+            several += (eliminated > 1) as usize;
+        }
+        assert_eq!((single, several), (6735, 1289));
+    }
 }
