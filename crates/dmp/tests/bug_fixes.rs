@@ -112,3 +112,26 @@ fn bug2_patch_apply_handles_trailing_header_only_hunk() {
     assert_eq!(patched, "abcdXefgh--------------------");
     assert_eq!(results, vec![true, true]);
 }
+
+#[test]
+fn word_tokens_round_trip_past_the_surrogate_gap() {
+    // Word ids are placeholder chars, and U+D800..U+DFFF are not chars: the
+    // 55,296th distinct token must skip the gap the decoder already skips.
+    // 28,750 distinct words plus the space between them is 28,751 tokens a
+    // side; the second text's words are all new, so the ids reach 57,501.
+    let text = |from: usize| -> String {
+        (from..from + 28_750)
+            .map(|word| format!("w{word}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let (old, new) = (text(0), text(28_750));
+    let mut dmp = Dmp::new();
+
+    let (chars1, chars2, words) = dmp.diff_words_tochars(&old, &new);
+    let mut diffs = vec![Diff::new(-1, chars1), Diff::new(1, chars2)];
+    dmp.diff_chars_tolines(&mut diffs, &words);
+
+    assert_eq!(words.len(), 57_502);
+    assert_eq!(diffs, vec![Diff::new(-1, old), Diff::new(1, new)]);
+}
