@@ -42,6 +42,7 @@ Need a cap on diff time? Set a timeout in seconds:
 
 ```rust
 dmp.diff_timeout = Some(1.0); // give up refining after 1 second
+dmp.diff_step_budget = Some(400_000_000); // or after this much work: same output on every machine
 ```
 
 Diffing documents where nearly every line changes a little (renames,

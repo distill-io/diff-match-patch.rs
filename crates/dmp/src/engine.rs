@@ -3,6 +3,7 @@
 // functions over `&[T: Eq]` — no Dmp state, no text; orchestration and
 // text materialization live in diff.rs.
 
+use std::cell::Cell;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -522,10 +523,45 @@ fn snake_rev<T: Eq>(old: &[T], new: &[T], mut x: usize, mut y: usize) -> (usize,
 /// slices directly (snake_fwd/snake_rev), with the invariant pinned by
 /// debug_asserts; the old guarded form spent ~18% of a bisect-bound profile
 /// in bounds-check machinery. v entries stay i32 to halve the working set.
+/// What stops one diff early: a wall-clock deadline, a step budget, or both.
+pub(crate) struct Limit {
+    pub(crate) deadline: Option<Instant>,
+    /// Steps left for every search of this diff together.
+    pub(crate) steps: Option<Cell<u64>>,
+}
+
+impl Limit {
+    fn is_spent(&self) -> bool {
+        self.deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+            || self.steps.as_ref().is_some_and(|steps| steps.get() == 0)
+    }
+
+    fn charge(&self, cost: u64) {
+        if let Some(steps) = &self.steps {
+            steps.set(steps.get().saturating_sub(cost));
+        }
+    }
+}
+
 pub(crate) fn bisect<T: Eq>(
     old: &[T],
     new: &[T],
-    deadline: Option<Instant>,
+    limit: &Limit,
+    scratch: &mut Vec<i32>,
+) -> Option<(usize, usize)> {
+    // Counting steps slows the walk, so only a diff with a budget pays for it.
+    if limit.steps.is_some() {
+        bisect_walk::<T, true>(old, new, limit, scratch)
+    } else {
+        bisect_walk::<T, false>(old, new, limit, scratch)
+    }
+}
+
+fn bisect_walk<T: Eq, const COUNTING: bool>(
+    old: &[T],
+    new: &[T],
+    limit: &Limit,
     scratch: &mut Vec<i32>,
 ) -> Option<(usize, usize)> {
     let text1_length = old.len() as i32;
@@ -552,11 +588,11 @@ pub(crate) fn bisect<T: Eq>(
     let mut k2start: i32 = 0;
     let mut k2end: i32 = 0;
     for d in 0..max_d {
-        if let Some(deadline) = deadline {
-            if Instant::now() >= deadline {
-                break;
-            }
+        if limit.is_spent() {
+            break;
         }
+        // One step per diagonal visited and per token walked along it.
+        let mut cost: usize = 0;
 
         // Walk the front path one step.
         //
@@ -584,6 +620,9 @@ pub(crate) fn bisect<T: Eq>(
                 "fwd walk start ({x_start},{y_start})"
             );
             let (x1, y1) = snake_fwd(old, new, x_start as usize, y_start as usize);
+            if COUNTING {
+                cost += 1 + x1 - x_start as usize;
+            }
             if let Some(cell) = v1.get_mut(k1_offset) {
                 *cell = x1 as i32;
             }
@@ -629,6 +668,9 @@ pub(crate) fn bisect<T: Eq>(
                 "rev walk start ({x_start},{y_start})"
             );
             let (x2, y2) = snake_rev(old, new, x_start as usize, y_start as usize);
+            if COUNTING {
+                cost += 1 + x2 - x_start as usize;
+            }
             if let Some(cell) = v2.get_mut(k2_offset) {
                 *cell = x2 as i32;
             }
@@ -655,6 +697,7 @@ pub(crate) fn bisect<T: Eq>(
             }
             k2 += 2;
         }
+        limit.charge(cost as u64);
     }
     // Number of diffs equals number of tokens, no commonality at all — or the
     // deadline expired.
@@ -860,12 +903,23 @@ mod tests {
         // "cat" vs "map": the reverse d=2 walk detects overlap at (2, 2)
         // (hand-traced against the pre-rewrite implementation).
         let mut scratch = Vec::new();
-        assert_eq!(bisect(b"cat", b"map", None, &mut scratch), Some((2, 2)));
+        let unlimited = Limit {
+            deadline: None,
+            steps: None,
+        };
+        assert_eq!(
+            bisect(b"cat", b"map", &unlimited, &mut scratch),
+            Some((2, 2))
+        );
         // No shared tokens at all: no overlap to split on.
-        assert_eq!(bisect(b"abc", b"xyz", None, &mut scratch), None);
+        assert_eq!(bisect(b"abc", b"xyz", &unlimited, &mut scratch), None);
         // Expired deadline: give up immediately.
         let past = Instant::now() - std::time::Duration::from_secs(1);
-        assert_eq!(bisect(b"cat", b"map", Some(past), &mut scratch), None);
+        let expired = Limit {
+            deadline: Some(past),
+            steps: None,
+        };
+        assert_eq!(bisect(b"cat", b"map", &expired, &mut scratch), None);
     }
 
     #[test]
