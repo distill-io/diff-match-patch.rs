@@ -1,6 +1,7 @@
 // Tokenization: packing lines and words into one placeholder char per unique
 // token so the char-based diff core can operate on coarser granularities.
 
+use crate::engine;
 use crate::types::{find_char, Diff, DiffToken, Dmp, TDiff};
 use core::char;
 use std::collections::HashMap;
@@ -28,12 +29,7 @@ impl Dmp {
             strings is intentionally blank.
         */
 
-        let mut wordarray: Vec<String> = vec!["".to_string()];
-        let mut wordhash: HashMap<String, u32> = HashMap::new();
-        let chars1 = self.diff_words_tochars_munge(text1, &mut wordarray, &mut wordhash);
-        let mut dmp = Dmp::new();
-        let chars2 = dmp.diff_words_tochars_munge(text2, &mut wordarray, &mut wordhash);
-        (chars1, chars2, wordarray)
+        words_tochars(text1, text2)
     }
 
     pub fn diff_words_tochars_munge(
@@ -54,25 +50,9 @@ impl Dmp {
             Encoded string.
         */
         let mut chars = "".to_string();
-
-        // Split into words and single-char whitespace tokens: each Unicode
-        // whitespace char is its own token (the regex-\s semantics pinned by
-        // test_diff_words_tochars_unicode_whitespace).
-        let mut word_start: Option<usize> = None;
-        for (idx, ch) in text.char_indices() {
-            if ch.is_whitespace() {
-                if let Some(start) = word_start.take() {
-                    chars += &self.make_token_dict(&text[start..idx], wordarray, wordhash);
-                }
-                chars +=
-                    &self.make_token_dict(&text[idx..idx + ch.len_utf8()], wordarray, wordhash);
-            } else if word_start.is_none() {
-                word_start = Some(idx);
-            }
-        }
-        if let Some(start) = word_start {
-            chars += &self.make_token_dict(&text[start..], wordarray, wordhash);
-        }
+        for_each_word(text, |word| {
+            chars.push(self.make_token_dict(word, wordarray, wordhash));
+        });
         chars
     }
 
@@ -81,14 +61,12 @@ impl Dmp {
         word: &str,
         wordarray: &mut Vec<String>,
         wordhash: &mut HashMap<String, u32>,
-    ) -> String {
+    ) -> char {
         if !wordhash.contains_key(word) {
             wordarray.push(word.to_string());
             wordhash.insert(word.to_string(), wordarray.len() as u32 - 1);
         }
-        char::from_u32(slot_to_id(wordhash[word] as usize))
-            .unwrap()
-            .to_string()
+        char::from_u32(slot_to_id(wordhash[word] as usize)).unwrap()
     }
 
     pub fn diff_lines_tochars(
@@ -148,6 +126,90 @@ impl Dmp {
             }
             diff.text = text;
         }
+    }
+}
+
+/// Pack both texts into one placeholder char per word or whitespace char.
+///
+/// Words are numbered in first-seen order, text1 then text2. The stretches
+/// the texts share at both ends hold the same words in both, so text2 copies
+/// their placeholders from text1 instead of looking each word up again.
+fn words_tochars(text1: &str, text2: &str) -> (String, String, Vec<String>) {
+    let mut words: Vec<String> = vec![String::new()];
+    let mut ids: FxMap<&str, u32> = FxMap::default();
+    let head = shared_head(text1, text2);
+    let tail = shared_tail(&text1[head..], &text2[head..]);
+    let (middle1, middle2) = (text1.len() - tail, text2.len() - tail);
+
+    let mut chars1 = String::with_capacity(text1.len() / 2);
+    pack_words(&text1[..head], &mut chars1, &mut words, &mut ids);
+    let head_chars = chars1.len();
+    pack_words(&text1[head..middle1], &mut chars1, &mut words, &mut ids);
+    let tail_chars = chars1.len();
+    pack_words(&text1[middle1..], &mut chars1, &mut words, &mut ids);
+
+    let mut chars2 = String::with_capacity(text2.len() / 2);
+    chars2.push_str(&chars1[..head_chars]);
+    pack_words(&text2[head..middle2], &mut chars2, &mut words, &mut ids);
+    chars2.push_str(&chars1[tail_chars..]);
+    (chars1, chars2, words)
+}
+
+/// Length of the longest shared prefix that stops at a whitespace char,
+/// where a token ends in both texts.
+fn shared_head(text1: &str, text2: &str) -> usize {
+    let mut end = engine::common_prefix(text1.as_bytes(), text2.as_bytes());
+    while !text1.is_char_boundary(end) {
+        end -= 1;
+    }
+    text1[..end].rfind(char::is_whitespace).unwrap_or(0)
+}
+
+/// Length of the longest shared suffix that starts at a whitespace char,
+/// where a token starts in both texts.
+fn shared_tail(text1: &str, text2: &str) -> usize {
+    let mut start = text1.len() - engine::common_suffix(text1.as_bytes(), text2.as_bytes());
+    while !text1.is_char_boundary(start) {
+        start += 1;
+    }
+    match text1[start..].find(char::is_whitespace) {
+        Some(idx) => text1.len() - start - idx,
+        None => 0,
+    }
+}
+
+/// Append one placeholder char per token of `text`, numbering new words.
+fn pack_words<'a>(
+    text: &'a str,
+    chars: &mut String,
+    words: &mut Vec<String>,
+    ids: &mut FxMap<&'a str, u32>,
+) {
+    for_each_word(text, |word| {
+        let slot = *ids.entry(word).or_insert_with(|| {
+            words.push(word.to_string());
+            words.len() as u32 - 1
+        });
+        chars.push(char::from_u32(slot_to_id(slot as usize)).unwrap());
+    });
+}
+
+/// Call `token` with each token of `text` in order: every whitespace char is
+/// a token (regex `\s`), and so is every run of other chars.
+fn for_each_word<'a>(text: &'a str, mut token: impl FnMut(&'a str)) {
+    let mut word_start: Option<usize> = None;
+    for (idx, ch) in text.char_indices() {
+        if ch.is_whitespace() {
+            if let Some(start) = word_start.take() {
+                token(&text[start..idx]);
+            }
+            token(&text[idx..idx + ch.len_utf8()]);
+        } else if word_start.is_none() {
+            word_start = Some(idx);
+        }
+    }
+    if let Some(start) = word_start {
+        token(&text[start..]);
     }
 }
 
