@@ -26,6 +26,10 @@ pub enum Segmentation {
 pub struct Dmp {
     // Number of seconds to map a diff before giving up (None for infinity).
     pub diff_timeout: Option<f32>,
+    // Search steps for the exact diff (None for no limit); once spent it keeps
+    // what it matched and may spend as much again on a coarser split. Same
+    // output on every machine; half-match is skipped when this is set.
+    pub diff_step_budget: Option<u64>,
     // Cost of an empty edit operation in terms of edit characters.
     pub edit_cost: i32,
     /*How far to search for a match (0 = exact location, 1000+ = broad match).
@@ -258,6 +262,7 @@ impl Dmp {
         // it will give a new dmp object.
         Dmp {
             diff_timeout: Some(1.0),
+            diff_step_budget: None,
             patch_delete_threshold: 0.5,
             edit_cost: 0,
             match_distance: 1000,

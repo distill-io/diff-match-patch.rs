@@ -3,6 +3,7 @@
 // functions over `&[T: Eq]` — no Dmp state, no text; orchestration and
 // text materialization live in diff.rs.
 
+use std::cell::Cell;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -392,8 +393,8 @@ pub(crate) struct HalfMatch {
     pub common: usize,
 }
 
-/// DMP diff_halfMatch over token slices. Caller gates this on the timeout
-/// setting (half-match trades optimality for speed).
+/// DMP diff_halfMatch over token slices. Callers run it only under a timeout
+/// with no step budget (half-match trades optimality for speed).
 pub(crate) fn half_match<T: Eq>(old: &[T], new: &[T]) -> Option<HalfMatch> {
     let old_is_long = old.len() > new.len();
     let (long, short) = if old_is_long { (old, new) } else { (new, old) };
@@ -511,9 +512,101 @@ fn snake_rev<T: Eq>(old: &[T], new: &[T], mut x: usize, mut y: usize) -> (usize,
     (x, y)
 }
 
+/// What stops one diff early: a wall-clock deadline, a step budget, or both.
+pub(crate) struct Limit {
+    pub(crate) deadline: Option<Instant>,
+    pub(crate) budget: Option<Budget>,
+}
+
+/// Steps shared by every search of one diff.
+pub(crate) struct Budget {
+    pub(crate) used: Cell<u64>,
+    /// Searches run exactly until this much is used.
+    pub(crate) exact: u64,
+    /// Searches past `exact` may run on to here to find matches to keep.
+    pub(crate) total: u64,
+}
+
+impl Budget {
+    pub(crate) fn new(exact: u64) -> Self {
+        Budget {
+            used: Cell::new(0),
+            exact,
+            total: exact.saturating_mul(2),
+        }
+    }
+
+    pub(crate) fn past_exact(&self) -> bool {
+        self.used.get() >= self.exact
+    }
+
+    fn spent(&self) -> bool {
+        self.used.get() >= self.total
+    }
+
+    fn room(&self) -> u64 {
+        self.total.saturating_sub(self.used.get())
+    }
+}
+
+impl Limit {
+    fn deadline_passed(&self) -> bool {
+        self.deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
+    fn charge(&self, cost: usize) {
+        if let Some(budget) = &self.budget {
+            budget
+                .used
+                .set(budget.used.get().saturating_add(cost as u64));
+        }
+    }
+}
+
+/// Where bisect splits a box.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Split {
+    /// The middle snake: diff both halves exactly.
+    Middle(usize, usize),
+    /// Out of budget: diff the parts before `head`, between, and after `tail`
+    /// on their own, which keeps the matches the search reached.
+    Ends {
+        head: (usize, usize),
+        tail: (usize, usize),
+    },
+    /// No overlap, or out of time or budget with nothing worth keeping.
+    None,
+}
+
+/// Shortest matched run worth keeping when the budget runs out.
+const ANCHOR: usize = 20;
+/// Edits an over-budget search may look ahead before it splits anyway.
+const MAX_OVER_BUDGET_EDITS: i32 = 1024;
+
+/// The in-box point of a d-path, as (x, y), that got furthest into both texts.
+fn furthest(v: &[i32], v_offset: i32, d: i32, n: usize, m: usize) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize)> = None;
+    for k in -d..=d {
+        let Some(&x) = v.get((v_offset + k) as usize) else {
+            continue;
+        };
+        let y = x - k;
+        if x < 0 || y < 0 || x as usize > n || y as usize > m {
+            continue;
+        }
+        let point = (x as usize, y as usize);
+        if best.map_or(true, |(bx, by)| point.0 + point.1 > bx + by) {
+            best = Some(point);
+        }
+    }
+    best
+}
+
 /// DMP diff_bisect middle-snake search. Returns the split point (x, y) where
 /// the forward and reverse d-paths overlap, or None when the inputs share no
-/// overlap (or the deadline expired) and the caller should emit delete+insert.
+/// overlap (or the deadline passed) and the caller should emit delete+insert.
+/// Out of budget it returns the ends of the matched runs it found instead.
 ///
 /// The classic ports guard the snake walks against negative x/y (Python's
 /// arr[-1] wraps from the end), but the Myers invariants make that
@@ -522,17 +615,36 @@ fn snake_rev<T: Eq>(old: &[T], new: &[T], mut x: usize, mut y: usize) -> (usize,
 /// slices directly (snake_fwd/snake_rev), with the invariant pinned by
 /// debug_asserts; the old guarded form spent ~18% of a bisect-bound profile
 /// in bounds-check machinery. v entries stay i32 to halve the working set.
-pub(crate) fn bisect<T: Eq>(
+pub(crate) fn bisect<T: Eq>(old: &[T], new: &[T], limit: &Limit, scratch: &mut Vec<i32>) -> Split {
+    // Counting steps slows the walk, so only a diff with a budget pays for it.
+    if limit.budget.is_some() {
+        bisect_walk::<T, true>(old, new, limit, scratch)
+    } else {
+        bisect_walk::<T, false>(old, new, limit, scratch)
+    }
+}
+
+fn bisect_walk<T: Eq, const COUNTING: bool>(
     old: &[T],
     new: &[T],
-    deadline: Option<Instant>,
+    limit: &Limit,
     scratch: &mut Vec<i32>,
-) -> Option<(usize, usize)> {
+) -> Split {
     let text1_length = old.len() as i32;
     let text2_length = new.len() as i32;
     let max_d: i32 = (text1_length + text2_length + 1) / 2;
-    let v_offset: i32 = max_d;
-    let v_length: i32 = 2 * max_d;
+    let mut span = max_d;
+    if let (true, Some(budget)) = (COUNTING, &limit.budget) {
+        if budget.spent() {
+            return Split::None;
+        }
+        // Past the exact budget a search never gets beyond the edit cap.
+        if budget.past_exact() {
+            span = max_d.min(MAX_OVER_BUDGET_EDITS + 1);
+        }
+    }
+    let v_offset: i32 = span;
+    let v_length: i32 = 2 * span;
     // The caller-provided scratch backs both k-line arrays: recursion and
     // rediff loops reuse one allocation (children are never larger, so after
     // the first call this is a pure memset).
@@ -551,12 +663,25 @@ pub(crate) fn bisect<T: Eq>(
     let mut k1end: i32 = 0;
     let mut k2start: i32 = 0;
     let mut k2end: i32 = 0;
-    for d in 0..max_d {
-        if let Some(deadline) = deadline {
-            if Instant::now() >= deadline {
-                break;
-            }
+    // The furthest-reaching ends of long matched runs, front and back.
+    let mut fwd_anchor: Option<(usize, usize)> = None;
+    let mut rev_anchor: Option<(usize, usize)> = None;
+    let mut stopped_at: Option<i32> = None;
+    'search: for d in 0..max_d {
+        if limit.deadline_passed() {
+            return Split::None;
         }
+        let mut room = u64::MAX;
+        if let (true, Some(budget)) = (COUNTING, &limit.budget) {
+            let anchored = fwd_anchor.is_some() || rev_anchor.is_some();
+            if budget.spent() || (budget.past_exact() && (anchored || d >= MAX_OVER_BUDGET_EDITS)) {
+                stopped_at = Some(d);
+                break 'search;
+            }
+            room = budget.room();
+        }
+        // One step per diagonal visited and per token walked along it.
+        let mut cost: usize = 0;
 
         // Walk the front path one step.
         //
@@ -584,6 +709,13 @@ pub(crate) fn bisect<T: Eq>(
                 "fwd walk start ({x_start},{y_start})"
             );
             let (x1, y1) = snake_fwd(old, new, x_start as usize, y_start as usize);
+            if COUNTING {
+                let walked = x1 - x_start as usize;
+                cost += 1 + walked;
+                if walked >= ANCHOR && fwd_anchor.map_or(true, |(ax, ay)| x1 + y1 > ax + ay) {
+                    fwd_anchor = Some((x1, y1));
+                }
+            }
             if let Some(cell) = v1.get_mut(k1_offset) {
                 *cell = x1 as i32;
             }
@@ -602,11 +734,17 @@ pub(crate) fn bisect<T: Eq>(
                             let x2 = text1_length - v2k;
                             if x1 as i32 >= x2 {
                                 // Overlap detected.
-                                return Some((x1, y1));
+                                limit.charge(cost);
+                                return Split::Middle(x1, y1);
                             }
                         }
                     }
                 }
+            }
+            if COUNTING && cost as u64 > room {
+                limit.charge(cost);
+                stopped_at = Some(d);
+                break 'search;
             }
             k1 += 2;
         }
@@ -629,6 +767,13 @@ pub(crate) fn bisect<T: Eq>(
                 "rev walk start ({x_start},{y_start})"
             );
             let (x2, y2) = snake_rev(old, new, x_start as usize, y_start as usize);
+            if COUNTING {
+                let walked = x2 - x_start as usize;
+                cost += 1 + walked;
+                if walked >= ANCHOR && rev_anchor.map_or(true, |(ax, ay)| x2 + y2 > ax + ay) {
+                    rev_anchor = Some((x2, y2));
+                }
+            }
             if let Some(cell) = v2.get_mut(k2_offset) {
                 *cell = x2 as i32;
             }
@@ -647,271 +792,55 @@ pub(crate) fn bisect<T: Eq>(
                             // Mirror x2 onto top-left coordinate system.
                             if v1k >= text1_length - x2 as i32 {
                                 // Overlap detected.
-                                return Some((v1k as usize, y1 as usize));
+                                limit.charge(cost);
+                                return Split::Middle(v1k as usize, y1 as usize);
                             }
                         }
                     }
                 }
             }
+            if COUNTING && cost as u64 > room {
+                limit.charge(cost);
+                stopped_at = Some(d);
+                break 'search;
+            }
             k2 += 2;
         }
+        limit.charge(cost);
     }
-    // Number of diffs equals number of tokens, no commonality at all — or the
-    // deadline expired.
-    None
+    // Without a stop the texts share no overlap at all.
+    let Some(d) = stopped_at else {
+        return Split::None;
+    };
+    let (n, m) = (old.len(), new.len());
+    // Without a long run to keep, split only once the edit cap is reached.
+    let capped = |v: &[i32]| (d >= MAX_OVER_BUDGET_EDITS).then(|| furthest(v, v_offset, d, n, m));
+    let mut head = fwd_anchor
+        .or_else(|| capped(v1).flatten())
+        .unwrap_or((0, 0));
+    let rev = rev_anchor
+        .or_else(|| capped(v2).flatten())
+        .unwrap_or((0, 0));
+    let mut tail = (n - rev.0, m - rev.1);
+    if head == (n, m) {
+        head = (0, 0);
+    }
+    if tail == (0, 0) {
+        tail = (n, m);
+    }
+    if head.0 > tail.0 || head.1 > tail.1 {
+        // The ends cross: keep the one that got further.
+        if head.0 + head.1 >= (n - tail.0) + (m - tail.1) {
+            tail = (n, m);
+        } else {
+            head = (0, 0);
+        }
+    }
+    if head == (0, 0) && tail == (n, m) {
+        return Split::None;
+    }
+    Split::Ends { head, tail }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn common_prefix_suffix_over_bytes() {
-        assert_eq!(common_prefix(b"1234abcdef", b"1234xyz"), 4);
-        assert_eq!(common_prefix(b"abc", b"xyz"), 0);
-        assert_eq!(common_prefix(b"1234", b"1234xyz"), 4);
-        assert_eq!(common_suffix(b"abcdef1234", b"xyz1234"), 4);
-        assert_eq!(common_suffix(b"abc", b"xyz"), 0);
-        assert_eq!(common_suffix(b"1234", b"xyz1234"), 4);
-        let empty: &[u8] = b"";
-        assert_eq!(common_prefix(empty, b"a"), 0);
-        assert_eq!(common_suffix(empty, b"a"), 0);
-    }
-
-    #[test]
-    fn common_overlap_over_bytes() {
-        let empty: &[u8] = b"";
-        assert_eq!(common_overlap(empty, b"abcd"), 0);
-        assert_eq!(common_overlap(b"abc", b"abcd"), 3);
-        assert_eq!(common_overlap(b"123456", b"abcd"), 0);
-        assert_eq!(common_overlap(b"123456xxx", b"xxxabcd"), 3);
-        // Unicode-motivated case from the canonical suite, expressed on bytes.
-        assert_eq!(common_overlap(b"fi", b"\x01ab"), 0);
-    }
-
-    #[test]
-    fn find_sub_over_bytes() {
-        assert_eq!(find_sub(b"abcdefabcdef", b"cde", 0), Some(2));
-        assert_eq!(find_sub(b"abcdefabcdef", b"cde", 3), Some(8));
-        assert_eq!(find_sub(b"abcdef", b"xyz", 0), None);
-        assert_eq!(find_sub(b"abc", b"", 1), Some(1));
-        assert_eq!(find_sub(b"", b"a", 0), None);
-        assert_eq!(find_sub(b"aaa", b"aaaa", 0), None);
-    }
-
-    #[test]
-    fn rfind_sub_over_bytes() {
-        assert_eq!(rfind_sub(b"abcabcabc", b"abc", 8), Some(6));
-        assert_eq!(rfind_sub(b"abcabcabc", b"abc", 5), Some(3));
-        // A match may end exactly at until + 1 (last token at index `until`).
-        assert_eq!(rfind_sub(b"xxabc", b"abc", 4), Some(2));
-        assert_eq!(rfind_sub(b"xxabc", b"abc", 3), None);
-        // `until` at or past hay.len() must scan safely to the end.
-        assert_eq!(rfind_sub(b"ab", b"b", 2), Some(1));
-        assert_eq!(rfind_sub(b"ab", b"b", 9), Some(1));
-        assert_eq!(rfind_sub(b"abc", b"", 2), Some(2));
-        assert_eq!(rfind_sub(b"", b"a", 0), None);
-    }
-
-    /// The search the backward blocks replaced: one scan from the front of
-    /// the text that kept the final hit.
-    fn rfind_sub_from_front<T: Eq>(hay: &[T], needle: &[T], until: usize) -> Option<usize> {
-        if needle.is_empty() {
-            return Some(until);
-        }
-        if hay.is_empty() {
-            return None;
-        }
-        let mut kmp: Option<Kmp<T>> = None;
-        let mut i = 0;
-        let mut len = 0;
-        let mut last: Option<usize> = None;
-        while i <= until {
-            if i < hay.len() && hay[i] == needle[len] {
-                len += 1;
-                i += 1;
-                if len == needle.len() {
-                    last = Some(i - len);
-                    len = kmp.get_or_insert_with(|| Kmp::new(needle)).fail(len);
-                }
-            } else if len == 0 {
-                match skip_to(hay, i + 1, &needle[0]) {
-                    Some(j) => i = j,
-                    None => return last,
-                }
-            } else {
-                len = kmp.get_or_insert_with(|| Kmp::new(needle)).fail(len);
-            }
-        }
-        last
-    }
-
-    #[test]
-    fn rfind_sub_matches_scan_from_front() {
-        // Every text of up to 11 bytes over two letters.
-        let texts = |len: usize| {
-            (0..1usize << len).map(move |bits| {
-                (0..len)
-                    .map(|i| if bits >> i & 1 == 0 { b'a' } else { b'b' })
-                    .collect::<Vec<u8>>()
-            })
-        };
-        // A hit or a miss is "far" when the search had to leave the first
-        // block of starts, which is as long as the needle.
-        let (mut near, mut far, mut missed_near, mut missed_far) = (0, 0, 0, 0);
-        for hay in (0..=11).flat_map(texts) {
-            for needle in (1..=4).flat_map(texts) {
-                for until in 0..=hay.len() + 1 {
-                    let expected = rfind_sub_from_front(&hay, &needle, until);
-                    assert_eq!(
-                        rfind_sub(&hay, &needle, until),
-                        expected,
-                        "{hay:?} {needle:?} {until}"
-                    );
-                    let end = (until + 1).min(hay.len());
-                    match expected {
-                        Some(at) if at + 2 * needle.len() <= end => far += 1,
-                        Some(_) => near += 1,
-                        None if 2 * needle.len() <= end => missed_far += 1,
-                        None => missed_near += 1,
-                    }
-                }
-            }
-        }
-        assert_eq!(
-            (near, far, missed_near, missed_far),
-            (339182, 199798, 606746, 328834)
-        );
-    }
-
-    #[test]
-    fn occurs_twice_over_chars() {
-        let c = |s: &str| s.chars().collect::<Vec<char>>();
-        let ot = |hay: &str, needle: &str| occurs_twice(&c(hay), &[], &c(needle));
-        assert!(!ot("abcdef", "cde")); // exactly one occurrence
-        assert!(ot("abcdefabc", "abc")); // two, disjoint
-        assert!(ot("aaaa", "aaa")); // two, overlapping
-        assert!(!ot("abc", "xyz")); // zero
-        assert!(!ot("", "a"));
-        assert!(!ot("ab", "abc")); // needle longer than hay
-                                   // A trailing occurrence must count even when the skip hit is past
-                                   // the last possible start for a *second* one.
-        assert!(ot("abxxxxxxxxxxxxxxxxxxab", "ab"));
-        assert!(!ot("axxxxxxxxxxxxxxxxxxxab", "ab"));
-        // The skip token is the rare one mid-needle ('Q' here), and
-        // occurrences sharing that token's neighbors still all count.
-        assert!(ot("eee eQe eee eQe", "eQe"));
-        assert!(!ot("eee eQe eee eee", "eQe"));
-        assert!(ot("aQaQa", "aQa")); // overlapping around a mid-needle pick
-                                     // Empty needles are the caller's special case, never "twice" here.
-        assert!(!ot("ab", ""));
-    }
-
-    #[test]
-    fn occurs_twice_at_every_split() {
-        let count = |hay: &[char], needle: &[char]| {
-            hay.windows(needle.len())
-                .filter(|window| window == &needle)
-                .count()
-        };
-        // Every text of up to 8 chars over a common and a rare letter.
-        let texts = |len: usize| {
-            (0..1usize << len).map(move |bits| {
-                (0..len)
-                    .map(|i| if bits >> i & 1 == 0 { 'e' } else { 'Q' })
-                    .collect::<Vec<char>>()
-            })
-        };
-        let (mut twice, mut by_seam) = (0, 0);
-        for hay in (0..=8).flat_map(texts) {
-            for needle in (1..=3).flat_map(texts) {
-                let expected = count(&hay, &needle) >= 2;
-                for split in 0..=hay.len() {
-                    let (head, tail) = hay.split_at(split);
-                    assert_eq!(
-                        occurs_twice(head, tail, &needle),
-                        expected,
-                        "{head:?} {tail:?} {needle:?}"
-                    );
-                    twice += expected as usize;
-                    by_seam +=
-                        (expected && count(head, &needle) + count(tail, &needle) < 2) as usize;
-                }
-            }
-        }
-        assert_eq!((twice, by_seam), (19302, 2644));
-    }
-
-    #[test]
-    fn half_match_over_bytes() {
-        // No half-match: shared run shorter than half the longer input.
-        assert!(half_match(b"1234567890".as_slice(), b"abcdef".as_slice()).is_none());
-        assert!(half_match(b"12345".as_slice(), b"23".as_slice()).is_none());
-        // Single half-match: 1234567890 vs a345678z shares "345678".
-        let hm = half_match(b"1234567890".as_slice(), b"a345678z".as_slice()).unwrap();
-        assert_eq!((hm.old_a, hm.new_a, hm.common), (2, 1, 6));
-        // Swapped sides mirror the split.
-        let hm = half_match(b"a345678z".as_slice(), b"1234567890".as_slice()).unwrap();
-        assert_eq!((hm.old_a, hm.new_a, hm.common), (1, 2, 6));
-    }
-
-    #[test]
-    fn bisect_over_bytes() {
-        // "cat" vs "map": the reverse d=2 walk detects overlap at (2, 2)
-        // (hand-traced against the pre-rewrite implementation).
-        let mut scratch = Vec::new();
-        assert_eq!(bisect(b"cat", b"map", None, &mut scratch), Some((2, 2)));
-        // No shared tokens at all: no overlap to split on.
-        assert_eq!(bisect(b"abc", b"xyz", None, &mut scratch), None);
-        // Expired deadline: give up immediately.
-        let past = Instant::now() - std::time::Duration::from_secs(1);
-        assert_eq!(bisect(b"cat", b"map", Some(past), &mut scratch), None);
-    }
-
-    #[test]
-    fn snake_walks() {
-        // Forward: extends the match run from (x, y), stops at the mismatch.
-        assert_eq!(snake_fwd(b"abcX", b"abcY", 0, 0), (3, 3));
-        assert_eq!(snake_fwd(b"abc", b"abc", 1, 1), (3, 3));
-        // Offsets are per-side: old[2..] vs new[0..].
-        assert_eq!(snake_fwd(b"xxab", b"abyy", 2, 0), (4, 2));
-        // Start at/past an end: nothing to extend.
-        assert_eq!(snake_fwd(b"ab", b"ab", 2, 2), (2, 2));
-        assert_eq!(snake_fwd(b"ab", b"ab", 3, 3), (3, 3));
-
-        // Reverse: x/y count matched tokens from the tails
-        // (old[len-1-x] vs new[len-1-y]).
-        assert_eq!(snake_rev(b"Xabc", b"Yabc", 0, 0), (3, 3));
-        assert_eq!(snake_rev(b"abcd", b"cd", 0, 0), (2, 2));
-        assert_eq!(snake_rev(b"ab", b"ab", 2, 2), (2, 2));
-    }
-
-    #[test]
-    fn contains_matches_find_sub() {
-        // `contains` must return the exact same first-occurrence index as
-        // `find_sub(.., .., 0)` on every shape — the diff output depends on
-        // it matching the reference's `indexOf`.
-        let cases: &[(&[u8], &[u8])] = &[
-            (b"", b""),
-            (b"abc", b""),
-            (b"abcdef", b"cd"),        // interior hit
-            (b"abcdef", b"abc"),       // prefix hit
-            (b"abcdef", b"def"),       // suffix hit
-            (b"abcdef", b"xyz"),       // no hit
-            (b"abcdef", b"abcdefg"),   // needle longer than hay
-            (b"XabcY", b"abc"),        // hit after a mismatch at 0
-            (b"aaaab", b"aab"),        // repeated first token
-            (b"abababab", b"ababab"),  // periodic near-equal: budget-fallback path
-            (b"abababab", b"babab"),   // periodic, offset-1 hit
-            (b"aaaaaaaa", b"aaaaaaa"), // fully periodic, prefix hit at 0
-            (b"aaaaaaab", b"aaaab"),   // periodic tail, no full hit
-        ];
-        for &(hay, needle) in cases {
-            assert_eq!(
-                contains(hay, needle),
-                find_sub(hay, needle, 0),
-                "contains disagrees with find_sub on hay={hay:?} needle={needle:?}"
-            );
-        }
-    }
-}
+mod tests;

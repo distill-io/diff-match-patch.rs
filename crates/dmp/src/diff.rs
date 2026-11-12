@@ -2,7 +2,7 @@
 // splitting), the cleanup passes, and diff-derived metrics. The token-generic
 // primitives live in engine.rs; text materialization happens here.
 
-use crate::engine;
+use crate::engine::{self, Budget, Limit, Split};
 use crate::types::{Diff, DiffToken, Dmp, TDiff};
 use std::time::Duration;
 
@@ -27,7 +27,7 @@ impl Dmp {
     /// Returns:
     /// Vector of diffs as changes.
     pub fn diff_main(&mut self, text1: &str, text2: &str, checklines: bool) -> Vec<Diff> {
-        let deadline = self.deadline_from_now();
+        let limit = self.limit_from_now();
         #[cfg(feature = "grapheme")]
         {
             if self.segmentation == crate::types::Segmentation::Grapheme {
@@ -44,7 +44,7 @@ impl Dmp {
                     &packed2,
                     checklines,
                     true,
-                    deadline,
+                    &limit,
                     &mut scratch,
                 );
                 packer.unpack_diffs(&mut diffs);
@@ -57,24 +57,32 @@ impl Dmp {
             text2,
             checklines,
             true,
-            deadline,
+            &limit,
             &mut Vec::new(),
         )
     }
 
     /// The deadline equivalent of `diff_timeout` starting now; bisect gives up
-    /// once it passes. `Some(0.0)` therefore means "zero budget", while `None`
+    /// once it passes. `Some(0.0)` therefore means "zero time", while `None`
     /// disables the deadline entirely (and with it the half-match speedup).
     ///
     /// Degenerate values mirror the historical float comparisons instead of
     /// panicking in Duration/Instant math: a negative timeout behaves as zero
-    /// budget, NaN as no deadline, and huge values are capped (~30 years).
+    /// time, NaN as no deadline, and huge values are capped (~30 years).
     fn deadline_from_now(&self) -> Option<Instant> {
         let secs = self.diff_timeout?;
         if secs.is_nan() {
             return None;
         }
         Some(Instant::now() + Duration::from_secs_f32(secs.clamp(0.0, 1.0e9)))
+    }
+
+    /// The deadline and step budget for one diff starting now.
+    fn limit_from_now(&self) -> Limit {
+        Limit {
+            deadline: self.deadline_from_now(),
+            budget: self.diff_step_budget.map(Budget::new),
+        }
     }
 
     /// Do a quick line-level diff on both chars, then rediff the parts for
@@ -98,8 +106,8 @@ impl Dmp {
                 return self.diff_main(&t1, &t2, true);
             }
         }
-        let deadline = self.deadline_from_now();
-        materialize(line_mode(self, text1, text2, deadline, &mut Vec::new()))
+        let limit = self.limit_from_now();
+        materialize(line_mode(self, text1, text2, &limit, &mut Vec::new()))
     }
 
     /// Find the 'middle snake' of a diff, split the problem in two
@@ -113,13 +121,13 @@ impl Dmp {
     /// Returns:
     /// Vector of diffs as changes.
     pub fn diff_bisect(&mut self, char1: &Vec<char>, char2: &Vec<char>) -> Vec<Diff> {
-        let deadline = self.deadline_from_now();
+        let limit = self.limit_from_now();
         materialize(bisect_diff(
             self,
             char1,
             char2,
             true,
-            deadline,
+            &limit,
             &mut Vec::new(),
         ))
     }
@@ -194,7 +202,7 @@ fn main_internal(
     text2: &str,
     checklines: bool,
     allow_words: bool,
-    deadline: Option<Instant>,
+    limit: &Limit,
     scratch: &mut Vec<i32>,
 ) -> Vec<Diff> {
     // Trivial outcomes build their single `Diff` straight from the `&str`
@@ -217,7 +225,7 @@ fn main_internal(
         text2,
         checklines,
         allow_words,
-        deadline,
+        limit,
         scratch,
     ))
 }
@@ -232,7 +240,7 @@ fn diff_str_tokens(
     text2: &str,
     checklines: bool,
     allow_words: bool,
-    deadline: Option<Instant>,
+    limit: &Limit,
     scratch: &mut Vec<i32>,
 ) -> Vec<TDiff> {
     // str-level fast paths: the trivial outcomes skip the char materialization.
@@ -260,22 +268,14 @@ fn diff_str_tokens(
             text2.as_bytes(),
             checklines,
             allow_words,
-            deadline,
+            limit,
             scratch,
         );
     }
 
     let char1: Vec<char> = text1.chars().collect();
     let char2: Vec<char> = text2.chars().collect();
-    main_slices(
-        dmp,
-        &char1,
-        &char2,
-        checklines,
-        allow_words,
-        deadline,
-        scratch,
-    )
+    main_slices(dmp, &char1, &char2, checklines, allow_words, limit, scratch)
 }
 
 /// The diff core over two `&[char]`s (crate internals that already hold char
@@ -288,7 +288,7 @@ fn diff_char_tokens(
     new: &[char],
     checklines: bool,
     allow_words: bool,
-    deadline: Option<Instant>,
+    limit: &Limit,
     scratch: &mut Vec<i32>,
 ) -> Vec<TDiff> {
     if old.is_empty() && new.is_empty() {
@@ -304,9 +304,9 @@ fn diff_char_tokens(
     if old.iter().all(char::is_ascii) && new.iter().all(char::is_ascii) {
         let b1: Vec<u8> = old.iter().map(|&c| c as u8).collect();
         let b2: Vec<u8> = new.iter().map(|&c| c as u8).collect();
-        return main_slices(dmp, &b1, &b2, checklines, allow_words, deadline, scratch);
+        return main_slices(dmp, &b1, &b2, checklines, allow_words, limit, scratch);
     }
-    main_slices(dmp, old, new, checklines, allow_words, deadline, scratch)
+    main_slices(dmp, old, new, checklines, allow_words, limit, scratch)
 }
 
 /// `diff_main` over char slices, for crate internals that already hold char
@@ -327,14 +327,14 @@ pub(crate) fn diff_main_chars(
             return dmp.diff_main(&t1, &t2, checklines);
         }
     }
-    let deadline = dmp.deadline_from_now();
+    let limit = dmp.limit_from_now();
     materialize(diff_char_tokens(
         dmp,
         old,
         new,
         checklines,
         true,
-        deadline,
+        &limit,
         &mut Vec::new(),
     ))
 }
@@ -354,7 +354,7 @@ fn main_slices<T: DiffToken>(
     new: &[T],
     checklines: bool,
     allow_words: bool,
-    deadline: Option<Instant>,
+    limit: &Limit,
     scratch: &mut Vec<i32>,
 ) -> Vec<TDiff> {
     // check for empty text
@@ -388,13 +388,23 @@ fn main_slices<T: DiffToken>(
         mid2,
         checklines,
         allow_words,
-        deadline,
+        limit,
         scratch,
     ));
     if suffix > 0 {
         diffs.push(TDiff::new(0, T::to_tokens(&old[old.len() - suffix..])));
     }
     dmp.diff_cleanup_merge_impl(&mut diffs);
+    if limit.budget.as_ref().is_some_and(Budget::past_exact) {
+        // A delete and an insert of the same text from neighbouring boxes can
+        // cancel and leave two equalities side by side, which one merge misses.
+        while diffs
+            .windows(2)
+            .any(|pair| pair[0].operation == 0 && pair[1].operation == 0)
+        {
+            dmp.diff_cleanup_merge_impl(&mut diffs);
+        }
+    }
     diffs
 }
 
@@ -406,7 +416,7 @@ fn compute<T: DiffToken>(
     new: &[T],
     checklines: bool,
     allow_words: bool,
-    deadline: Option<Instant>,
+    limit: &Limit,
     scratch: &mut Vec<i32>,
 ) -> Vec<TDiff> {
     if old.is_empty() {
@@ -446,7 +456,8 @@ fn compute<T: DiffToken>(
         }
     }
 
-    if deadline.is_some() {
+    // Half-match work is not counted, so only a timeout without a budget runs it.
+    if limit.deadline.is_some() && limit.budget.is_none() {
         if let Some(hm) = engine::half_match(old, new) {
             // A half-match was found, send both pairs off for separate processing.
             let mid_common: Vec<char> = T::to_tokens(&old[hm.old_a..hm.old_a + hm.common]);
@@ -456,7 +467,7 @@ fn compute<T: DiffToken>(
                 &new[..hm.new_a],
                 checklines,
                 allow_words,
-                deadline,
+                limit,
                 scratch,
             );
             diffs.push(TDiff::new(0, mid_common));
@@ -466,7 +477,7 @@ fn compute<T: DiffToken>(
                 &new[hm.new_a + hm.common..],
                 checklines,
                 allow_words,
-                deadline,
+                limit,
                 scratch,
             ));
             return diffs;
@@ -474,26 +485,27 @@ fn compute<T: DiffToken>(
     }
 
     if checklines && old.len() > 100 && new.len() > 100 {
-        return line_mode(dmp, old, new, deadline, scratch);
+        return line_mode(dmp, old, new, limit, scratch);
     }
     if allow_words && dmp.word_mode && old.len() > 100 && new.len() > 100 {
-        return word_mode(dmp, old, new, deadline, scratch);
+        return word_mode(dmp, old, new, limit, scratch);
     }
-    bisect_diff(dmp, old, new, allow_words, deadline, scratch)
+    bisect_diff(dmp, old, new, allow_words, limit, scratch)
 }
 
 /// Split on the Myers middle snake and recurse, or emit delete+insert when
-/// there is no overlap (or the deadline expired).
+/// there is no overlap (or the deadline expired), or finish an over-budget
+/// split without recursing.
 fn bisect_diff<T: DiffToken>(
     dmp: &mut Dmp,
     old: &[T],
     new: &[T],
     allow_words: bool,
-    deadline: Option<Instant>,
+    limit: &Limit,
     scratch: &mut Vec<i32>,
 ) -> Vec<TDiff> {
-    match engine::bisect(old, new, deadline, scratch) {
-        Some((x, y)) => {
+    match engine::bisect(old, new, limit, scratch) {
+        Split::Middle(x, y) => {
             // Compute both diffs serially on the split halves.
             let mut diffs = main_slices(
                 dmp,
@@ -501,7 +513,7 @@ fn bisect_diff<T: DiffToken>(
                 &new[..y],
                 false,
                 allow_words,
-                deadline,
+                limit,
                 scratch,
             );
             diffs.extend(main_slices(
@@ -510,19 +522,94 @@ fn bisect_diff<T: DiffToken>(
                 &new[y..],
                 false,
                 allow_words,
-                deadline,
+                limit,
                 scratch,
             ));
             diffs
         }
-        None => {
+        Split::None => {
             // Number of diffs equals number of characters, no commonality at all.
             vec![
                 TDiff::new(-1, T::to_tokens(old)),
                 TDiff::new(1, T::to_tokens(new)),
             ]
         }
+        Split::Ends { head, tail } => finish_over_budget(old, new, head, tail, limit, scratch),
     }
+}
+
+/// A box still to diff, with where it starts in the old and new text.
+type Part<'a, T> = (usize, usize, &'a [T], &'a [T]);
+
+/// Queue the three parts a split leaves, so the ends come off first.
+fn push_parts<'a, T>(
+    todo: &mut Vec<Part<'a, T>>,
+    (o, n, old, new): Part<'a, T>,
+    head: (usize, usize),
+    tail: (usize, usize),
+) {
+    todo.push((
+        o + head.0,
+        n + head.1,
+        &old[head.0..tail.0],
+        &new[head.1..tail.1],
+    ));
+    todo.push((o + tail.0, n + tail.1, &old[tail.0..], &new[tail.1..]));
+    todo.push((o, n, &old[..head.0], &new[..head.1]));
+}
+
+/// Diff what is left of an over-budget split. A loop, not recursion: these
+/// splits can be far too lopsided for the stack.
+fn finish_over_budget<T: DiffToken>(
+    old: &[T],
+    new: &[T],
+    head: (usize, usize),
+    tail: (usize, usize),
+    limit: &Limit,
+    scratch: &mut Vec<i32>,
+) -> Vec<TDiff> {
+    // Pieces keyed by old + new position, which orders them along the diff.
+    let mut pieces: Vec<(usize, TDiff)> = Vec::new();
+    let mut todo = Vec::new();
+    push_parts(&mut todo, (0, 0, old, new), head, tail);
+    while let Some((o, n, old, new)) = todo.pop() {
+        let prefix = engine::common_prefix(old, new);
+        if prefix > 0 {
+            pieces.push((o + n, TDiff::new(0, T::to_tokens(&old[..prefix]))));
+        }
+        let (o, n, old, new) = (o + prefix, n + prefix, &old[prefix..], &new[prefix..]);
+        let suffix = engine::common_suffix(old, new);
+        let (old_end, new_end) = (old.len() - suffix, new.len() - suffix);
+        if suffix > 0 {
+            pieces.push((
+                o + old_end + n + new_end,
+                TDiff::new(0, T::to_tokens(&old[old_end..])),
+            ));
+        }
+        let (old, new) = (&old[..old_end], &new[..new_end]);
+        // Bisect needs both sides non-empty and more than one token against one.
+        let split = if old.is_empty() || new.is_empty() || old.len() + new.len() < 3 {
+            Split::None
+        } else {
+            engine::bisect(old, new, limit, scratch)
+        };
+        let (head, tail) = match split {
+            Split::Middle(x, y) => ((x, y), (x, y)),
+            Split::Ends { head, tail } => (head, tail),
+            Split::None => {
+                if !old.is_empty() {
+                    pieces.push((o + n, TDiff::new(-1, T::to_tokens(old))));
+                }
+                if !new.is_empty() {
+                    pieces.push((o + old.len() + n, TDiff::new(1, T::to_tokens(new))));
+                }
+                continue;
+            }
+        };
+        push_parts(&mut todo, (o, n, old, new), head, tail);
+    }
+    pieces.sort_unstable_by_key(|piece| piece.0);
+    pieces.into_iter().map(|piece| piece.1).collect()
 }
 
 /// Line-mode speedup: diff on packed line ids first, then rediff the
@@ -531,7 +618,7 @@ fn line_mode<T: DiffToken>(
     dmp: &mut Dmp,
     old: &[T],
     new: &[T],
-    deadline: Option<Instant>,
+    limit: &Limit,
     scratch: &mut Vec<i32>,
 ) -> Vec<TDiff> {
     let mut diffs: Vec<TDiff> =
@@ -551,7 +638,7 @@ fn line_mode<T: DiffToken>(
             // Packed placeholder chars must never be re-tokenized: no line mode
             // (checklines = false) and no word mode (allow_words = false).
             let mut diffs: Vec<TDiff> =
-                diff_str_tokens(dmp, &text3, &text4, false, false, deadline, scratch);
+                diff_str_tokens(dmp, &text3, &text4, false, false, limit, scratch);
 
             // Convert the diff back to original text.
             crate::tokenize::chars_tolines_arena(&mut diffs, &store);
@@ -562,7 +649,7 @@ fn line_mode<T: DiffToken>(
 
     // Rediff any replacement blocks, this time character-by-character —
     // where the opt-in word mode may engage on large blocks.
-    rediff_blocks(dmp, diffs, true, deadline, scratch)
+    rediff_blocks(dmp, diffs, true, limit, scratch)
 }
 
 /// Word-mode speedup (opt-in via `Dmp::word_mode`): the word-level analog of
@@ -575,13 +662,12 @@ fn word_mode<T: DiffToken>(
     dmp: &mut Dmp,
     old: &[T],
     new: &[T],
-    deadline: Option<Instant>,
+    limit: &Limit,
     scratch: &mut Vec<i32>,
 ) -> Vec<TDiff> {
     let (text3, text4, store) = crate::tokenize::words_tochars_arena(old, new);
 
-    let mut diffs: Vec<TDiff> =
-        diff_str_tokens(dmp, &text3, &text4, false, false, deadline, scratch);
+    let mut diffs: Vec<TDiff> = diff_str_tokens(dmp, &text3, &text4, false, false, limit, scratch);
 
     crate::tokenize::chars_tolines_arena(&mut diffs, &store);
     // Unlike line mode, NO semantic cleanup before the rediff: word-level
@@ -592,7 +678,7 @@ fn word_mode<T: DiffToken>(
 
     // Word-level rediffs must not re-enter word mode: a whitespace-free
     // block packs into a single token and would recurse onto itself.
-    rediff_blocks(dmp, diffs, false, deadline, scratch)
+    rediff_blocks(dmp, diffs, false, limit, scratch)
 }
 
 /// Shared tail of the token-mode speedups: rediff every replacement block of
@@ -601,7 +687,7 @@ fn rediff_blocks(
     dmp: &mut Dmp,
     mut diffs: Vec<TDiff>,
     allow_words: bool,
-    deadline: Option<Instant>,
+    limit: &Limit,
     scratch: &mut Vec<i32>,
 ) -> Vec<TDiff> {
     // Add a dummy entry at the end.
@@ -629,7 +715,7 @@ fn rediff_blocks(
                     &text_insert,
                     false,
                     allow_words,
-                    deadline,
+                    limit,
                     scratch,
                 );
                 for z in sub_diff {
@@ -689,18 +775,23 @@ mod tests {
             for (t1, t2) in cases {
                 let mut dmp = Dmp::new();
                 dmp.word_mode = word_mode;
+                let unlimited = Limit {
+                    deadline: None,
+                    budget: None,
+                };
                 let byte_diff = main_slices(
                     &mut dmp,
                     t1.as_bytes(),
                     t2.as_bytes(),
                     true,
                     true,
-                    None,
+                    &unlimited,
                     &mut Vec::new(),
                 );
                 let c1: Vec<char> = t1.chars().collect();
                 let c2: Vec<char> = t2.chars().collect();
-                let char_diff = main_slices(&mut dmp, &c1, &c2, true, true, None, &mut Vec::new());
+                let char_diff =
+                    main_slices(&mut dmp, &c1, &c2, true, true, &unlimited, &mut Vec::new());
                 assert_eq!(byte_diff.len(), char_diff.len(), "{t1:?} vs {t2:?}");
                 for (b, c) in byte_diff.iter().zip(char_diff.iter()) {
                     assert_eq!(b.operation, c.operation, "{t1:?} vs {t2:?}");
@@ -710,3 +801,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod budget_tests;
