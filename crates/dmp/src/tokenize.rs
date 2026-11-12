@@ -86,7 +86,9 @@ impl Dmp {
             wordarray.push(word.to_string());
             wordhash.insert(word.to_string(), wordarray.len() as u32 - 1);
         }
-        char::from_u32(wordhash[word]).unwrap().to_string()
+        char::from_u32(slot_to_id(wordhash[word] as usize))
+            .unwrap()
+            .to_string()
     }
 
     pub fn diff_lines_tochars(
