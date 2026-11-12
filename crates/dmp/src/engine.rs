@@ -309,26 +309,46 @@ fn rarest_index(needle: &[char]) -> usize {
     best
 }
 
-/// Does `needle` occur at least twice in `hay`? Skip-scan for the needle's
-/// rarest token at its offset and verify candidates by slice equality,
-/// stopping at the second hit — the streaming equivalent of
-/// `find_sub(..) != rfind_sub(..)` for non-empty needles (overlapping
-/// occurrences count, exactly as distinct first/last indices do). Callers
-/// special-case empty needles.
+/// Does `needle` occur at least twice in the text `head` followed by `tail`?
+/// Skip-scan for the needle's rarest token at its offset and verify
+/// candidates by slice equality, stopping at the second hit — the streaming
+/// equivalent of `find_sub(..) != rfind_sub(..)` for non-empty needles
+/// (overlapping occurrences count, exactly as distinct first/last indices
+/// do). Callers special-case empty needles.
 ///
 /// O(n·m) worst case, unlike KMP's O(n+m) — chosen deliberately: the only
 /// caller (patch_add_context) grows needles only while they are shorter than
 /// match_maxbits − 2·patch_margin (≈ a couple dozen tokens), so the verify
 /// is a short vectorized compare and the skip scan dominates. Char-concrete
 /// (unlike its siblings) because the rarity heuristic is alphabet-specific.
-pub(crate) fn occurs_twice(hay: &[char], needle: &[char]) -> bool {
-    if needle.is_empty() || hay.len() < needle.len() {
+pub(crate) fn occurs_twice(head: &[char], tail: &[char], needle: &[char]) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    // An occurrence that starts in `head` and ends in `tail` lies in the seam.
+    let reach = needle.len() - 1;
+    let seam = [
+        &head[head.len() - reach.min(head.len())..],
+        &tail[..reach.min(tail.len())],
+    ]
+    .concat();
+    let mut found = false;
+    // The patch being built sits at the front of `tail`, so a repeat of its
+    // pattern is found soonest there.
+    [tail, &seam, head]
+        .iter()
+        .any(|part| second_occurrence(part, needle, &mut found))
+}
+
+/// Scans `hay` for a second occurrence of `needle`, counting one already
+/// `found` in an earlier part.
+fn second_occurrence(hay: &[char], needle: &[char], found: &mut bool) -> bool {
+    if hay.len() < needle.len() {
         return false;
     }
     let k = rarest_index(needle);
     let target = &needle[k];
     let last_start = hay.len() - needle.len();
-    let mut found = false;
     let mut p = k;
     while let Some(hit) = skip_to(hay, p, target) {
         // hit >= p >= k, so the candidate start never underflows.
@@ -337,10 +357,10 @@ pub(crate) fn occurs_twice(hay: &[char], needle: &[char]) -> bool {
             break;
         }
         if hay[j..j + needle.len()] == *needle {
-            if found {
+            if *found {
                 return true;
             }
-            found = true;
+            *found = true;
         }
         p = hit + 1;
     }
@@ -680,7 +700,7 @@ mod tests {
     #[test]
     fn occurs_twice_over_chars() {
         let c = |s: &str| s.chars().collect::<Vec<char>>();
-        let ot = |hay: &str, needle: &str| occurs_twice(&c(hay), &c(needle));
+        let ot = |hay: &str, needle: &str| occurs_twice(&c(hay), &[], &c(needle));
         assert!(!ot("abcdef", "cde")); // exactly one occurrence
         assert!(ot("abcdefabc", "abc")); // two, disjoint
         assert!(ot("aaaa", "aaa")); // two, overlapping
@@ -698,6 +718,41 @@ mod tests {
         assert!(ot("aQaQa", "aQa")); // overlapping around a mid-needle pick
                                      // Empty needles are the caller's special case, never "twice" here.
         assert!(!ot("ab", ""));
+    }
+
+    #[test]
+    fn occurs_twice_at_every_split() {
+        let count = |hay: &[char], needle: &[char]| {
+            hay.windows(needle.len())
+                .filter(|window| window == &needle)
+                .count()
+        };
+        // Every text of up to 8 chars over a common and a rare letter.
+        let texts = |len: usize| {
+            (0..1usize << len).map(move |bits| {
+                (0..len)
+                    .map(|i| if bits >> i & 1 == 0 { 'e' } else { 'Q' })
+                    .collect::<Vec<char>>()
+            })
+        };
+        let (mut twice, mut by_seam) = (0, 0);
+        for hay in (0..=8).flat_map(texts) {
+            for needle in (1..=3).flat_map(texts) {
+                let expected = count(&hay, &needle) >= 2;
+                for split in 0..=hay.len() {
+                    let (head, tail) = hay.split_at(split);
+                    assert_eq!(
+                        occurs_twice(head, tail, &needle),
+                        expected,
+                        "{head:?} {tail:?} {needle:?}"
+                    );
+                    twice += expected as usize;
+                    by_seam +=
+                        (expected && count(head, &needle) + count(tail, &needle) < 2) as usize;
+                }
+            }
+        }
+        assert_eq!((twice, by_seam), (19302, 2644));
     }
 
     #[test]

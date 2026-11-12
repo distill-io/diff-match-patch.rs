@@ -1,7 +1,8 @@
 // The patch-building loop against the loop it replaced.
 
+use super::super::add_context;
 use super::{random_text, Lcg};
-use crate::types::{Diff, Dmp, Patch};
+use crate::types::{max, min, Diff, Dmp, Patch};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 /// Which paths of the patch-building loop a run took.
@@ -17,6 +18,143 @@ struct MakeHits {
     panicked: usize,
 }
 
+/// Which paths of the context search a run took.
+#[derive(Debug, Default, PartialEq)]
+struct ContextHits {
+    empty_text: usize,
+    empty_pattern: usize,
+    grown: usize,
+    gave_up: usize,
+    prefix: usize,
+    suffix: usize,
+}
+
+/// The context search over one contiguous text, with the uniqueness check
+/// spelled out as a count of matching windows.
+fn add_context_contiguous(dmp: &Dmp, patch: &mut Patch, text: &[char], hits: &mut ContextHits) {
+    if text.is_empty() {
+        hits.empty_text += 1;
+        return;
+    }
+    let mut pattern: Vec<char> =
+        text[patch.start2 as usize..(patch.length1 as usize + patch.start2 as usize)].to_vec();
+    let mut padding: i32 = 0;
+    hits.empty_pattern += pattern.is_empty() as usize;
+    let ambiguous = |text: &[char], pattern: &[char]| {
+        if pattern.is_empty() {
+            text.len() != 1
+        } else {
+            text.windows(pattern.len())
+                .filter(|window| *window == pattern)
+                .count()
+                >= 2
+        }
+    };
+    let mut rst = 0;
+    while ambiguous(text, &pattern)
+        && (pattern.len() as i32) < (dmp.match_maxbits - dmp.patch_margin * 2)
+    {
+        hits.grown += 1;
+        padding += dmp.patch_margin;
+        pattern = text[max(0, patch.start2 - padding) as usize
+            ..min(text.len() as i32, patch.start2 + patch.length1 + padding) as usize]
+            .to_vec();
+        rst += 1;
+        if rst > 5 {
+            hits.gave_up += 1;
+            break;
+        }
+    }
+    padding += dmp.patch_margin;
+    let prefix: String = text[max(0, patch.start2 - padding) as usize..patch.start2 as usize]
+        .iter()
+        .collect();
+    let prefix_length = prefix.chars().count() as i32;
+    if !prefix.is_empty() {
+        hits.prefix += 1;
+        patch.diffs.insert(0, Diff::new(0, prefix.clone()));
+    }
+    let suffix: String = text[(patch.start2 + patch.length1) as usize
+        ..min(text.len() as i32, patch.start2 + patch.length1 + padding) as usize]
+        .iter()
+        .collect();
+    let suffix_length = suffix.chars().count() as i32;
+    if !suffix.is_empty() {
+        hits.suffix += 1;
+        patch.diffs.push(Diff::new(0, suffix));
+    }
+    patch.start1 -= prefix_length;
+    patch.start2 -= prefix_length;
+    patch.length1 += prefix_length + suffix_length;
+    patch.length2 += prefix_length + suffix_length;
+}
+
+#[test]
+fn split_context_matches_contiguous() {
+    let mut rng = Lcg(2);
+    let mut hits = ContextHits::default();
+    let (mut straddled, mut panicked) = (0, 0);
+    // (match_maxbits, patch_margin)
+    let settings = [(32, 4), (32, 0), (16, 2), (8, 1), (0, 4), (64, 3)];
+    for round in 0..4_000 {
+        let mut dmp = Dmp::new();
+        (dmp.match_maxbits, dmp.patch_margin) = settings[round % settings.len()];
+        let len = [0, 1, 2, 9, 30, 60][rng.below(6)];
+        let text: Vec<char> = random_text(&mut rng, len).chars().collect();
+        // The patched span mostly lies in the text; some start before it or
+        // run past its end.
+        let start =
+            rng.below(len as u64 + 2) as i32 - (rng.below(25) == 0) as i32 * (len as i32 + 2);
+        let length = [0, 0, 1, 2, 5, 12][rng.below(6)];
+        let patch = Patch::new(
+            vec![Diff::new(1, "x".to_string())],
+            start,
+            start,
+            length,
+            length + 1,
+        );
+        let mut expected = patch.clone();
+        let expected_ok = catch_unwind(AssertUnwindSafe(|| {
+            add_context_contiguous(&dmp, &mut expected, &text, &mut hits)
+        }))
+        .is_ok();
+        let mut whole = patch.clone();
+        let whole_ok = catch_unwind(AssertUnwindSafe(|| {
+            dmp.patch_add_context(&mut whole, &mut text.clone())
+        }))
+        .is_ok();
+        assert_eq!((whole_ok, &whole), (expected_ok, &expected), "{text:?}");
+        let split = rng.below(len as u64 + 1) as i32;
+        let (head, tail) = text.split_at(split as usize);
+        let mut actual = patch.clone();
+        let actual_ok = catch_unwind(AssertUnwindSafe(|| {
+            add_context(&dmp, &mut actual, head, tail)
+        }))
+        .is_ok();
+        assert_eq!(
+            (actual_ok, &actual),
+            (expected_ok, &expected),
+            "{head:?} {tail:?}"
+        );
+        panicked += !expected_ok as usize;
+        straddled += (expected_ok
+            && expected.start2 < split
+            && split < expected.start2 + expected.length1) as usize;
+    }
+    assert_eq!(
+        hits,
+        ContextHits {
+            empty_text: 681,
+            empty_pattern: 919,
+            grown: 2368,
+            gave_up: 221,
+            prefix: 1419,
+            suffix: 1420,
+        }
+    );
+    assert_eq!((straddled, panicked), (504, 1322));
+}
+
 /// The loop the edit cursor replaced: it spliced every edit into a copy of
 /// the whole text and cloned that copy for every patch.
 fn make4_by_splicing(
@@ -25,6 +163,7 @@ fn make4_by_splicing(
     diffs: &[Diff],
     hits: &mut MakeHits,
 ) -> Vec<Patch> {
+    let mut context = ContextHits::default();
     let mut patches: Vec<Patch> = vec![];
     if diffs.is_empty() {
         return patches;
@@ -75,7 +214,7 @@ fn make4_by_splicing(
             patch.length2 += temp1.len() as i32;
         } else if temp1.len() as i32 >= 2 * dmp.patch_margin && !patch.diffs.is_empty() {
             hits.closed += 1;
-            dmp.patch_add_context(&mut patch, &mut prepatch);
+            add_context_contiguous(dmp, &mut patch, &prepatch, &mut context);
             patches.push(patch);
             patch = Patch::new(vec![], 0, 0, 0, 0);
             prepatch = postpatch.clone();
@@ -90,7 +229,7 @@ fn make4_by_splicing(
     }
     if !patch.diffs.is_empty() {
         hits.leftover += 1;
-        dmp.patch_add_context(&mut patch, &mut prepatch);
+        add_context_contiguous(dmp, &mut patch, &prepatch, &mut context);
         patches.push(patch);
     }
     patches

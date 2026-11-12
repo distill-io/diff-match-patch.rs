@@ -19,64 +19,7 @@ impl Dmp {
     /// patch: The patch to grow.
     /// text: Source text.
     pub fn patch_add_context(&mut self, patch: &mut Patch, text: &mut Vec<char>) {
-        if text.is_empty() {
-            return;
-        }
-        let mut pattern: Vec<char> =
-            text[patch.start2 as usize..(patch.length1 as usize + patch.start2 as usize)].to_vec();
-        let mut padding: i32 = 0;
-
-        // Grow the pattern while it is ambiguous (occurs more than once) in
-        // text. A pattern is always a slice of text, so it occurs at least
-        // once; the empty pattern (insertion with no margin yet) mirrors the
-        // oracle's first-index != last-index check: unique only in 1-char text.
-        let ambiguous = |text: &[char], pattern: &[char]| {
-            if pattern.is_empty() {
-                text.len() != 1
-            } else {
-                engine::occurs_twice(text, pattern)
-            }
-        };
-        let mut rst = 0;
-        while ambiguous(text, &pattern)
-            && (pattern.len() as i32) < (self.match_maxbits - self.patch_margin * 2)
-        {
-            padding += self.patch_margin;
-            pattern = text[max(0, patch.start2 - padding) as usize
-                ..min(text.len() as i32, patch.start2 + patch.length1 + padding) as usize]
-                .to_vec();
-            rst += 1;
-            if rst > 5 {
-                break;
-            }
-        }
-        // Add one chunk for good luck.
-        padding += self.patch_margin;
-
-        // Add the prefix.
-        let prefix: String = text[max(0, patch.start2 - padding) as usize..patch.start2 as usize]
-            .iter()
-            .collect();
-        let prefix_length = prefix.chars().count() as i32;
-        if !prefix.is_empty() {
-            patch.diffs.insert(0, Diff::new(0, prefix.clone()));
-        }
-
-        // Add the suffix.
-        let suffix: String = text[(patch.start2 + patch.length1) as usize
-            ..min(text.len() as i32, patch.start2 + patch.length1 + padding) as usize]
-            .iter()
-            .collect();
-        let suffix_length = suffix.chars().count() as i32;
-        if !suffix.is_empty() {
-            patch.diffs.push(Diff::new(0, suffix));
-        }
-        // Roll back the start points.
-        patch.start1 -= prefix_length;
-        patch.start2 -= prefix_length;
-        // Extend lengths.
-        patch.length1 += prefix_length + suffix_length;
-        patch.length2 += prefix_length + suffix_length;
+        add_context(self, patch, text, &[]);
     }
 
     /// Compute a list of patches to turn text1 into text2.
@@ -138,7 +81,9 @@ impl Dmp {
         // The text with the edits so far applied is `done` followed by `rest`.
         let mut done: Vec<char> = vec![];
         let mut rest: &[char] = &source;
-        let mut prepatch: Vec<char> = source.clone(); // Recreate the patches to determine context info.
+        // The text before the open patch's edits is `done[..prepatch_done]`
+        // followed by `prepatch_rest`; context is read from it.
+        let (mut prepatch_done, mut prepatch_rest) = (0, rest);
         for i in 0..diffs.len() {
             let temp1: &Vec<char> = &(diffs[i].text.chars().collect());
             if patch.diffs.is_empty() && diffs[i].operation != 0 {
@@ -175,10 +120,10 @@ impl Dmp {
             } else if temp1.len() as i32 >= 2 * self.patch_margin {
                 // Time for a new patch.
                 if !patch.diffs.is_empty() {
-                    self.patch_add_context(&mut patch, &mut prepatch);
+                    add_context(self, &mut patch, &done[..prepatch_done], prepatch_rest);
                     patches.push(patch);
                     patch = Patch::new(vec![], 0, 0, 0, 0);
-                    prepatch = [&done[..], rest].concat();
+                    (prepatch_done, prepatch_rest) = (done.len(), rest);
                     char_count1 = char_count2;
                 }
             }
@@ -194,8 +139,7 @@ impl Dmp {
 
         // Pick up the leftover patch if not empty.
         if !patch.diffs.is_empty() {
-            self.patch_add_context(&mut patch, &mut prepatch);
-            // println!("{:?}", prepatch);
+            add_context(self, &mut patch, &done[..prepatch_done], prepatch_rest);
             patches.push(patch);
         }
         patches
@@ -611,6 +555,96 @@ impl Dmp {
             .into_iter()
             .next()
             .unwrap_or_else(|| panic!("Invalid patch string: {}", textline))
+    }
+}
+
+/// `patch_add_context` over a text held as two parts, `head` then `tail`.
+fn add_context(dmp: &Dmp, patch: &mut Patch, head: &[char], tail: &[char]) {
+    let text_len = head.len() + tail.len();
+    if text_len == 0 {
+        return;
+    }
+    let mut pattern: Vec<char> = span(
+        head,
+        tail,
+        patch.start2 as usize,
+        patch.length1 as usize + patch.start2 as usize,
+    );
+    let mut padding: i32 = 0;
+
+    // Grow the pattern while it is ambiguous (occurs more than once) in
+    // text. A pattern is always a slice of text, so it occurs at least
+    // once; the empty pattern (insertion with no margin yet) mirrors the
+    // oracle's first-index != last-index check: unique only in 1-char text.
+    let ambiguous = |pattern: &[char]| {
+        if pattern.is_empty() {
+            text_len != 1
+        } else {
+            engine::occurs_twice(head, tail, pattern)
+        }
+    };
+    let mut rst = 0;
+    while ambiguous(&pattern) && (pattern.len() as i32) < (dmp.match_maxbits - dmp.patch_margin * 2)
+    {
+        padding += dmp.patch_margin;
+        pattern = span(
+            head,
+            tail,
+            max(0, patch.start2 - padding) as usize,
+            min(text_len as i32, patch.start2 + patch.length1 + padding) as usize,
+        );
+        rst += 1;
+        if rst > 5 {
+            break;
+        }
+    }
+    // Add one chunk for good luck.
+    padding += dmp.patch_margin;
+
+    // Add the prefix.
+    let prefix: String = span(
+        head,
+        tail,
+        max(0, patch.start2 - padding) as usize,
+        patch.start2 as usize,
+    )
+    .iter()
+    .collect();
+    let prefix_length = prefix.chars().count() as i32;
+    if !prefix.is_empty() {
+        patch.diffs.insert(0, Diff::new(0, prefix.clone()));
+    }
+
+    // Add the suffix.
+    let suffix: String = span(
+        head,
+        tail,
+        (patch.start2 + patch.length1) as usize,
+        min(text_len as i32, patch.start2 + patch.length1 + padding) as usize,
+    )
+    .iter()
+    .collect();
+    let suffix_length = suffix.chars().count() as i32;
+    if !suffix.is_empty() {
+        patch.diffs.push(Diff::new(0, suffix));
+    }
+    // Roll back the start points.
+    patch.start1 -= prefix_length;
+    patch.start2 -= prefix_length;
+    // Extend lengths.
+    patch.length1 += prefix_length + suffix_length;
+    patch.length2 += prefix_length + suffix_length;
+}
+
+/// The chars `from..to` of the text `head` followed by `tail`; panics where
+/// slicing the joined text would.
+fn span(head: &[char], tail: &[char], from: usize, to: usize) -> Vec<char> {
+    if to <= head.len() {
+        head[from..to].to_vec()
+    } else if from >= head.len() {
+        tail[from - head.len()..to - head.len()].to_vec()
+    } else {
+        [&head[from..], &tail[..to - head.len()]].concat()
     }
 }
 
