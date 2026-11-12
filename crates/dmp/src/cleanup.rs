@@ -402,9 +402,8 @@ struct Candidate {
 /// edit over than to keep into a delete plus an insert. Returns whether any
 /// was turned.
 ///
-/// Same result as rescanning after each one, in one pass: turning an equality
-/// only adds edit kinds to the runs beside it, so only the candidate before
-/// it needs another look.
+/// Turning an equality only adds edit kinds to the runs beside it, so only
+/// the candidate before it needs another look.
 fn split_cheap_equalities(diffs: &mut Vec<TDiff>, edit_cost: i32) -> bool {
     let mut candidates: Vec<Candidate> = vec![];
     let mut turned: Vec<usize> = vec![];
@@ -624,9 +623,8 @@ struct Standing {
 /// Turn every equality no longer than the edits on both sides of it into a
 /// delete plus an insert. Returns whether any was turned.
 ///
-/// Same result as rescanning from two equalities back after each one, in one
-/// pass: an equality's left side is fixed while it stands, and its right side
-/// only grows, so it needs rechecking only when that side grows.
+/// An equality's left side is fixed while it stands and its right side only
+/// grows, so it is rechecked only when that side grows.
 fn eliminate_small_equalities(diffs: &mut Vec<TDiff>) -> bool {
     let mut standing: Vec<Standing> = vec![];
     // Edit lengths before the first standing equality.
