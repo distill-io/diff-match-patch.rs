@@ -25,6 +25,45 @@ fn edit_chars(diffs: &[Diff]) -> usize {
         .sum()
 }
 
+/// Run `diff` twice and check it rebuilds both texts from non-empty pieces
+/// with no two neighbours sharing an op.
+fn assert_well_formed(
+    old: &str,
+    new: &str,
+    mut diff: impl FnMut() -> Vec<Diff>,
+    ctx: &str,
+) -> Vec<Diff> {
+    let diffs = diff();
+    assert_eq!(diff(), diffs, "{ctx}");
+    let side = |skip: i32| -> String {
+        diffs
+            .iter()
+            .filter(|d| d.operation != skip)
+            .map(|d| d.text.as_str())
+            .collect()
+    };
+    assert_eq!(side(1), old, "{ctx}");
+    assert_eq!(side(-1), new, "{ctx}");
+    assert!(diffs.iter().all(|d| !d.text.is_empty()), "{ctx}");
+    assert!(
+        diffs.windows(2).all(|w| w[0].operation != w[1].operation),
+        "{ctx}"
+    );
+    diffs
+}
+
+/// Forty sentences, every fifth with one char inserted.
+fn fox_pair() -> (String, String) {
+    let mut old = String::new();
+    let mut new = String::new();
+    for i in 0..40 {
+        old += &format!("the quick brown fox jumps over the lazy dog. {i} ");
+        let mark = if i % 5 == 0 { "x" } else { "" };
+        new += &format!("the quick brown fox jumps over the lazy dog. {mark}{i} ");
+    }
+    (old, new)
+}
+
 #[test]
 fn a_spent_budget_keeps_what_it_found() {
     let (old, new) = ("abcdefgh1xyz2", "stuvw1mnop2qr");
@@ -49,13 +88,7 @@ fn a_spent_budget_keeps_what_it_found() {
 
 #[test]
 fn an_over_budget_diff_keeps_long_matches() {
-    let mut old = String::new();
-    let mut new = String::new();
-    for i in 0..40 {
-        old += &format!("the quick brown fox jumps over the lazy dog. {i} ");
-        let mark = if i % 5 == 0 { "x" } else { "" };
-        new += &format!("the quick brown fox jumps over the lazy dog. {mark}{i} ");
-    }
+    let (old, new) = fox_pair();
     assert_eq!((old.len(), new.len()), (1910, 1918));
     let shape = |budget: Option<u64>| {
         let diffs = differ(budget).diff_main(&old, &new, false);
@@ -172,15 +205,12 @@ fn over_budget_diffs_are_valid_and_deterministic() {
             let random = rng.next() % 4000;
             for budget in [0, 1, random] {
                 let ctx = format!("budget {budget} checklines {checklines} {old:?} {new:?}");
-                let mut diffs = differ(Some(budget)).diff_main(&old, &new, checklines);
-                assert_eq!(
-                    differ(Some(budget)).diff_main(&old, &new, checklines),
-                    diffs,
-                    "{ctx}"
+                let diffs = assert_well_formed(
+                    &old,
+                    &new,
+                    || differ(Some(budget)).diff_main(&old, &new, checklines),
+                    &ctx,
                 );
-                assert_eq!(cleaner.diff_text1(&mut diffs), old, "{ctx}");
-                assert_eq!(cleaner.diff_text2(&mut diffs), new, "{ctx}");
-                assert!(diffs.iter().all(|d| !d.text.is_empty()), "{ctx}");
                 let mut merged = diffs.clone();
                 cleaner.diff_cleanup_merge(&mut merged);
                 assert_eq!(merged, diffs, "{ctx}");
@@ -190,4 +220,70 @@ fn over_budget_diffs_are_valid_and_deterministic() {
         }
     }
     assert_eq!((runs, differ_from_unlimited), (900, 663));
+}
+
+#[test]
+fn an_over_budget_diff_under_a_timeout_matches_the_budget_alone() {
+    let (old, new) = fox_pair();
+    let diffs = assert_well_formed(
+        &old,
+        &new,
+        || {
+            let mut dmp = differ(Some(360));
+            dmp.diff_timeout = Some(1.0e6);
+            dmp.diff_main(&old, &new, false)
+        },
+        "timeout",
+    );
+    assert_ne!(diffs, differ(None).diff_main(&old, &new, false));
+    assert_eq!(diffs, differ(Some(360)).diff_main(&old, &new, false));
+}
+
+#[test]
+fn an_over_budget_word_diff_is_well_formed() {
+    let (old, new) = fox_pair();
+    let words = |budget: Option<u64>| {
+        let mut dmp = differ(budget);
+        dmp.word_mode = true;
+        dmp.diff_main(&old, &new, false)
+    };
+    let diffs = assert_well_formed(&old, &new, || words(Some(100)), "words");
+    assert_ne!(diffs, words(None));
+}
+
+#[cfg(feature = "grapheme")]
+#[test]
+fn an_over_budget_grapheme_diff_is_well_formed() {
+    let (old, new) = fox_pair();
+    // Every "o" becomes a two-scalar cluster.
+    let (old, new) = (old.replace('o', "o\u{301}"), new.replace('o', "o\u{301}"));
+    let clusters = |budget: Option<u64>| {
+        let mut dmp = differ(budget);
+        dmp.segmentation = diff_match_patch::Segmentation::Grapheme;
+        dmp.diff_main(&old, &new, false)
+    };
+    let diffs = assert_well_formed(&old, &new, || clusters(Some(360)), "grapheme");
+    assert_ne!(diffs, clusters(None));
+}
+
+#[test]
+fn an_over_budget_bisect_is_well_formed() {
+    let (old, new) = fox_pair();
+    let (old_chars, new_chars): (Vec<char>, Vec<char>) =
+        (old.chars().collect(), new.chars().collect());
+    let bisect = |budget: Option<u64>| differ(budget).diff_bisect(&old_chars, &new_chars);
+    let diffs = assert_well_formed(&old, &new, || bisect(Some(360)), "bisect");
+    assert_ne!(diffs, bisect(None));
+}
+
+#[test]
+fn an_over_budget_line_diff_is_well_formed() {
+    let (old, new) = fox_pair();
+    let (old, new) = (
+        old.replace("dog. ", "dog.\n"),
+        new.replace("dog. ", "dog.\n"),
+    );
+    let lines = |budget: Option<u64>| differ(budget).diff_main(&old, &new, true);
+    let diffs = assert_well_formed(&old, &new, || lines(Some(100)), "lines");
+    assert_ne!(diffs, lines(None));
 }
