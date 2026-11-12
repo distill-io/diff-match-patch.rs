@@ -56,16 +56,14 @@ impl Lcg {
 }
 
 // Any list the public cleanup accepts: empty pieces and repeated ops included.
-fn random_diffs(rng: &mut Lcg) -> Vec<(i32, Vec<char>)> {
+fn random_diffs(rng: &mut Lcg, alphabet: &[char]) -> Vec<(i32, Vec<char>)> {
     let max_len = [1, 2, 4, 9][rng.below(4)];
     (0..rng.below(14))
         .map(|_| {
             let operation = [-1, 0, 1, 0][rng.below(4)];
             let len = rng.below(max_len + 1);
-            (
-                operation,
-                (0..len).map(|_| ['a', 'b'][rng.below(2)]).collect(),
-            )
+            let text = (0..len).map(|_| alphabet[rng.below(alphabet.len() as u64)]);
+            (operation, text.collect())
         })
         .collect()
 }
@@ -87,7 +85,7 @@ fn one_pass_elimination_matches_rescanning() {
     // Inputs that lose one equality, and inputs that lose several.
     let (mut single, mut several) = (0, 0);
     for _ in 0..50_000 {
-        let input = random_diffs(&mut rng);
+        let input = random_diffs(&mut rng, &['a', 'b']);
         let (mut expected, mut actual) = (tokens(&input), tokens(&input));
         let changed = eliminate_by_rescanning(&mut expected);
         assert_eq!(
@@ -156,7 +154,7 @@ fn one_pass_shift_matches_removal() {
     // Inputs that lose one equality, and inputs that lose several.
     let (mut single, mut several) = (0, 0);
     for _ in 0..50_000 {
-        let input = random_diffs(&mut rng);
+        let input = random_diffs(&mut rng, &['a', 'b']);
         let (mut expected, mut actual) = (tokens(&input), tokens(&input));
         let changed = shift_by_removal(&mut expected);
         assert_eq!(
@@ -200,4 +198,70 @@ fn merge_rounds_do_not_grow_the_stack() {
         merged,
         vec![(1, "ab".repeat(rounds).chars().collect()), (0, equality)]
     );
+}
+
+/// The loop the one-pass form replaced: remove each emptied equality in place.
+fn slide_by_removal(dmp: &mut Dmp, diffs: &mut Vec<TDiff>) {
+    let mut pointer: i32 = 1;
+    while pointer < diffs.len() as i32 - 1 {
+        if diffs[pointer as usize - 1].operation == 0 && diffs[pointer as usize + 1].operation == 0
+        {
+            let mut buf: Vec<char> = vec![];
+            buf.extend_from_slice(&diffs[pointer as usize - 1].data);
+            buf.extend_from_slice(&diffs[pointer as usize].data);
+            buf.extend_from_slice(&diffs[pointer as usize + 1].data);
+            let mut a = diffs[pointer as usize - 1].data.len();
+            let mut b = a + diffs[pointer as usize].data.len();
+            let common_offset = engine::common_suffix(&buf[..a], &buf[a..b]);
+            a -= common_offset;
+            b -= common_offset;
+            let mut best = (a, b);
+            let mut best_score = dmp.diff_cleanup_semantic_score(&buf[..a], &buf[a..b])
+                + dmp.diff_cleanup_semantic_score(&buf[a..b], &buf[b..]);
+            while a < b && b < buf.len() && buf[a] == buf[b] {
+                a += 1;
+                b += 1;
+                let score = dmp.diff_cleanup_semantic_score(&buf[..a], &buf[a..b])
+                    + dmp.diff_cleanup_semantic_score(&buf[a..b], &buf[b..]);
+                if score >= best_score {
+                    best_score = score;
+                    best = (a, b);
+                }
+            }
+            if diffs[pointer as usize - 1].data != buf[..best.0] {
+                if best.0 > 0 {
+                    diffs[pointer as usize - 1].data = buf[..best.0].to_vec();
+                } else {
+                    diffs.remove(pointer as usize - 1);
+                    pointer -= 1;
+                }
+                diffs[pointer as usize].data = buf[best.0..best.1].to_vec();
+                if best.1 < buf.len() {
+                    diffs[pointer as usize + 1].data = buf[best.1..].to_vec();
+                } else {
+                    diffs.remove(pointer as usize + 1);
+                    pointer += 1;
+                }
+            }
+        }
+        pointer += 1;
+    }
+}
+
+#[test]
+fn one_pass_slide_matches_removal() {
+    let mut rng = Lcg(3);
+    // Inputs that lose one equality, and inputs that lose several.
+    let (mut single, mut several) = (0, 0);
+    for _ in 0..50_000 {
+        let input = random_diffs(&mut rng, &['a', ' ', '\n', '.']);
+        let (mut expected, mut actual) = (tokens(&input), tokens(&input));
+        slide_by_removal(&mut Dmp::new(), &mut expected);
+        Dmp::new().diff_cleanup_semantic_lossless_impl(&mut actual);
+        let removed = input.len() - actual.len();
+        assert_eq!(pieces(actual), pieces(expected), "{input:?}");
+        single += (removed == 1) as usize;
+        several += (removed > 1) as usize;
+    }
+    assert_eq!((single, several), (4016, 207));
 }

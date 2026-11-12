@@ -82,12 +82,12 @@ impl Dmp {
     /// Args:
     /// diffs: Vector of diff object.
     pub(crate) fn diff_cleanup_semantic_lossless_impl(&mut self, diffs: &mut Vec<TDiff>) {
-        let mut pointer: i32 = 1;
+        // diffs[..kept] is settled, diffs[next] is the edit under test, and
+        // the slots between are left over from removed equalities.
+        let (mut kept, mut next) = (1, 1);
         //Intentionally ignore the first and last element (don't need checking).
-        while pointer < diffs.len() as i32 - 1 {
-            if diffs[pointer as usize - 1].operation == 0
-                && diffs[pointer as usize + 1].operation == 0
-            {
+        while next + 1 < diffs.len() {
+            if diffs[kept - 1].operation == 0 && diffs[next + 1].operation == 0 {
                 // This is a single edit surrounded by equalities. Slide it
                 // over one concatenated buffer: the buffer is invariant under
                 // both the left shift and each right slide (the moved char is
@@ -95,15 +95,15 @@ impl Dmp {
                 // points (a, b) move, and each step costs two boundary score
                 // probes instead of rebuilding three char vectors.
                 let mut buf: Vec<char> = Vec::with_capacity(
-                    diffs[pointer as usize - 1].data.len()
-                        + diffs[pointer as usize].data.len()
-                        + diffs[pointer as usize + 1].data.len(),
+                    diffs[kept - 1].data.len()
+                        + diffs[next].data.len()
+                        + diffs[next + 1].data.len(),
                 );
-                buf.extend_from_slice(&diffs[pointer as usize - 1].data);
-                buf.extend_from_slice(&diffs[pointer as usize].data);
-                buf.extend_from_slice(&diffs[pointer as usize + 1].data);
-                let eq1_len = diffs[pointer as usize - 1].data.len();
-                let edit_len = diffs[pointer as usize].data.len();
+                buf.extend_from_slice(&diffs[kept - 1].data);
+                buf.extend_from_slice(&diffs[next].data);
+                buf.extend_from_slice(&diffs[next + 1].data);
+                let eq1_len = diffs[kept - 1].data.len();
+                let edit_len = diffs[next].data.len();
                 let mut a = eq1_len;
                 let mut b = eq1_len + edit_len;
 
@@ -128,30 +128,33 @@ impl Dmp {
                     }
                 }
 
-                if diffs[pointer as usize - 1].data != buf[..best.0] {
+                if diffs[kept - 1].data != buf[..best.0] {
                     // We have an improvement, save it back to the diff.
-                    let best_equality1 = buf[..best.0].to_vec();
-                    let best_edit = buf[best.0..best.1].to_vec();
-                    let best_equality2 = buf[best.1..].to_vec();
-                    if !best_equality1.is_empty() {
-                        diffs[pointer as usize - 1] =
-                            TDiff::new(diffs[pointer as usize - 1].operation, best_equality1);
+                    diffs[next].data = buf[best.0..best.1].to_vec();
+                    if best.0 > 0 {
+                        diffs[kept - 1].data = buf[..best.0].to_vec();
                     } else {
-                        diffs.remove(pointer as usize - 1);
-                        pointer -= 1;
+                        kept -= 1;
                     }
-                    diffs[pointer as usize] =
-                        TDiff::new(diffs[pointer as usize].operation, best_edit);
-                    if !best_equality2.is_empty() {
-                        diffs[pointer as usize + 1] =
-                            TDiff::new(diffs[pointer as usize + 1].operation, best_equality2);
+                    if best.1 < buf.len() {
+                        diffs[next + 1].data = buf[best.1..].to_vec();
                     } else {
-                        diffs.remove(pointer as usize + 1);
-                        pointer += 1;
+                        // The emptied equality goes; the piece after it is not tested.
+                        diffs.swap(kept, next);
+                        kept += 1;
+                        next += 2;
+                        if next == diffs.len() {
+                            break;
+                        }
                     }
                 }
             }
-            pointer += 1;
+            diffs.swap(kept, next);
+            kept += 1;
+            next += 1;
+        }
+        if kept < next {
+            diffs.drain(kept..next);
         }
     }
 
