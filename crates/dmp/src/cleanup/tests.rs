@@ -102,3 +102,16 @@ fn one_pass_elimination_matches_rescanning() {
     }
     assert_eq!((single, several), (6735, 1289));
 }
+
+#[test]
+fn merge_leaves_nothing_of_empty_pieces() {
+    for input in [
+        vec![(0, vec![])],
+        vec![(0, vec![]), (0, vec![])],
+        vec![(-1, vec![]), (1, vec![])],
+    ] {
+        let mut diffs = tokens(&input);
+        Dmp::new().diff_cleanup_merge_impl(&mut diffs);
+        assert_eq!(pieces(diffs), vec![], "{input:?}");
+    }
+}

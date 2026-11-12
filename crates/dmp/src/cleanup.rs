@@ -444,7 +444,7 @@ impl Dmp {
         let mut changes = false;
         let mut i: i32 = 1;
         // Intentionally ignore the first and last element (don't need checking).
-        while (i as usize) < diffs.len() - 1 {
+        while (i as usize) + 1 < diffs.len() {
             if diffs[i as usize - 1].operation == 0 && diffs[i as usize + 1].operation == 0 {
                 // This is a single edit surrounded by equalities.
                 if diffs[i as usize]
