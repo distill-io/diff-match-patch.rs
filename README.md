@@ -96,7 +96,7 @@ search:
 
 ```rust
 dmp.diff_timeout = None; // no clock
-dmp.diff_step_budget = Some(400_000_000); // about one second of search
+dmp.diff_step_budget = Some(400_000_000); // ~1 s of exact search, ~2 s at worst
 ```
 
 `None` turns a limit off. The budget counts search steps only: packing lines
