@@ -341,104 +341,12 @@ impl Dmp {
     /// Args:
     /// diffs: vectors of diff object.
     pub(crate) fn diff_cleanup_merge_impl(&mut self, diffs: &mut Vec<TDiff>) {
-        if diffs.is_empty() {
-            return;
-        }
-        // First pass: one forward fold into a fresh vector — the same
-        // accumulate / factor / flush the in-place version did, without its
-        // Vec::insert/remove churn (quadratic on many-run diffs). A dummy
-        // equality flushes the final run. Text stays as char runs the whole
-        // way, so a run of same-op pieces is concatenated by `extend`, never
-        // decoded from / re-encoded to UTF-8.
-        let mut out: Vec<TDiff> = Vec::with_capacity(diffs.len());
-        let mut text_insert: Vec<char> = vec![];
-        let mut text_delete: Vec<char> = vec![];
-        let mut count_insert = 0;
-        let mut count_delete = 0;
-        for diff in diffs
-            .drain(..)
-            .chain(std::iter::once(TDiff::new(0, vec![])))
-        {
-            if diff.operation == -1 {
-                text_delete.extend_from_slice(&diff.data);
-                count_delete += 1;
-            } else if diff.operation == 1 {
-                text_insert.extend_from_slice(&diff.data);
-                count_insert += 1;
-            } else {
-                let mut equality = diff;
-                // Upon reaching an equality, check for prior redundancies.
-                if count_delete + count_insert > 1 {
-                    let mut delete_vec = std::mem::take(&mut text_delete);
-                    let mut insert_vec = std::mem::take(&mut text_insert);
-                    if count_delete > 0 && count_insert > 0 {
-                        // Factor out any common prefixies.
-                        let mut commonlength = engine::common_prefix(&insert_vec, &delete_vec);
-                        if commonlength != 0 {
-                            let prefix = insert_vec[..commonlength].to_vec();
-                            match out.last_mut() {
-                                Some(prev) if prev.operation == 0 => {
-                                    prev.data.extend_from_slice(&prefix)
-                                }
-                                // No equality before the run to grow: mirrors
-                                // the in-place version's insert at the head.
-                                _ => out.insert(0, TDiff::new(0, prefix)),
-                            }
-                            insert_vec.drain(..commonlength);
-                            delete_vec.drain(..commonlength);
-                        }
-
-                        // Factor out any common suffixies.
-                        commonlength = engine::common_suffix(&insert_vec, &delete_vec);
-                        if commonlength != 0 {
-                            let mut suffix = insert_vec[insert_vec.len() - commonlength..].to_vec();
-                            suffix.extend_from_slice(&equality.data);
-                            equality.data = suffix;
-                            insert_vec.truncate(insert_vec.len() - commonlength);
-                            delete_vec.truncate(delete_vec.len() - commonlength);
-                        }
-                    }
-                    // Add the merged records.
-                    if !delete_vec.is_empty() {
-                        out.push(TDiff::new(-1, delete_vec));
-                    }
-                    if !insert_vec.is_empty() {
-                        out.push(TDiff::new(1, insert_vec));
-                    }
-                    out.push(equality);
-                } else if count_delete + count_insert == 1 {
-                    // A single edit passes through untouched (even an
-                    // empty-text one, as the in-place version left it).
-                    if count_delete == 1 {
-                        out.push(TDiff::new(-1, std::mem::take(&mut text_delete)));
-                    } else {
-                        out.push(TDiff::new(1, std::mem::take(&mut text_insert)));
-                    }
-                    out.push(equality);
-                } else {
-                    // No pending edits: merge adjacent equalities.
-                    match out.last_mut() {
-                        Some(prev) if prev.operation == 0 => {
-                            prev.data.extend_from_slice(&equality.data)
-                        }
-                        _ => out.push(equality),
-                    }
-                }
-                count_delete = 0;
-                text_delete = vec![];
-                text_insert = vec![];
-                count_insert = 0;
+        // A shift can line up edits to merge, and that merge can allow another shift.
+        while !diffs.is_empty() {
+            merge_edit_runs(diffs);
+            if !shift_edits_over_equalities(diffs) {
+                break;
             }
-        }
-        *diffs = out;
-        // Remove the dummy entry at the end.
-        if diffs[diffs.len() - 1].data.is_empty() {
-            diffs.pop();
-        }
-
-        // If shifts were made, the diff needs reordering and another shift sweep.
-        if shift_edits_over_equalities(diffs) {
-            self.diff_cleanup_merge_impl(diffs);
         }
     }
 
@@ -571,6 +479,102 @@ impl Dmp {
 
     pub fn diff_cleanup_merge(&mut self, diffs: &mut Vec<Diff>) {
         dispatch(self, diffs, Dmp::diff_cleanup_merge_impl);
+    }
+}
+
+/// Join each run of edits between two equalities into one delete and one
+/// insert, move their common prefix and suffix into the equalities around
+/// them, and join adjacent equalities.
+fn merge_edit_runs(diffs: &mut Vec<TDiff>) {
+    // One forward fold into a fresh vector — the same accumulate / factor /
+    // flush the in-place version did, without its Vec::insert/remove churn
+    // (quadratic on many-run diffs). A dummy equality flushes the final run.
+    // Text stays as char runs the whole way, so a run of same-op pieces is
+    // concatenated by `extend`, never decoded from / re-encoded to UTF-8.
+    let mut out: Vec<TDiff> = Vec::with_capacity(diffs.len());
+    let mut text_insert: Vec<char> = vec![];
+    let mut text_delete: Vec<char> = vec![];
+    let mut count_insert = 0;
+    let mut count_delete = 0;
+    for diff in diffs
+        .drain(..)
+        .chain(std::iter::once(TDiff::new(0, vec![])))
+    {
+        if diff.operation == -1 {
+            text_delete.extend_from_slice(&diff.data);
+            count_delete += 1;
+        } else if diff.operation == 1 {
+            text_insert.extend_from_slice(&diff.data);
+            count_insert += 1;
+        } else {
+            let mut equality = diff;
+            // Upon reaching an equality, check for prior redundancies.
+            if count_delete + count_insert > 1 {
+                let mut delete_vec = std::mem::take(&mut text_delete);
+                let mut insert_vec = std::mem::take(&mut text_insert);
+                if count_delete > 0 && count_insert > 0 {
+                    // Factor out any common prefixies.
+                    let mut commonlength = engine::common_prefix(&insert_vec, &delete_vec);
+                    if commonlength != 0 {
+                        let prefix = insert_vec[..commonlength].to_vec();
+                        match out.last_mut() {
+                            Some(prev) if prev.operation == 0 => {
+                                prev.data.extend_from_slice(&prefix)
+                            }
+                            // No equality before the run to grow: mirrors
+                            // the in-place version's insert at the head.
+                            _ => out.insert(0, TDiff::new(0, prefix)),
+                        }
+                        insert_vec.drain(..commonlength);
+                        delete_vec.drain(..commonlength);
+                    }
+
+                    // Factor out any common suffixies.
+                    commonlength = engine::common_suffix(&insert_vec, &delete_vec);
+                    if commonlength != 0 {
+                        let mut suffix = insert_vec[insert_vec.len() - commonlength..].to_vec();
+                        suffix.extend_from_slice(&equality.data);
+                        equality.data = suffix;
+                        insert_vec.truncate(insert_vec.len() - commonlength);
+                        delete_vec.truncate(delete_vec.len() - commonlength);
+                    }
+                }
+                // Add the merged records.
+                if !delete_vec.is_empty() {
+                    out.push(TDiff::new(-1, delete_vec));
+                }
+                if !insert_vec.is_empty() {
+                    out.push(TDiff::new(1, insert_vec));
+                }
+                out.push(equality);
+            } else if count_delete + count_insert == 1 {
+                // A single edit passes through untouched (even an
+                // empty-text one, as the in-place version left it).
+                if count_delete == 1 {
+                    out.push(TDiff::new(-1, std::mem::take(&mut text_delete)));
+                } else {
+                    out.push(TDiff::new(1, std::mem::take(&mut text_insert)));
+                }
+                out.push(equality);
+            } else {
+                // No pending edits: merge adjacent equalities.
+                match out.last_mut() {
+                    Some(prev) if prev.operation == 0 => {
+                        prev.data.extend_from_slice(&equality.data)
+                    }
+                    _ => out.push(equality),
+                }
+            }
+            count_delete = 0;
+            text_delete = vec![];
+            text_insert = vec![];
+            count_insert = 0;
+        }
+    }
+    *diffs = out;
+    // Remove the dummy entry at the end.
+    if diffs[diffs.len() - 1].data.is_empty() {
+        diffs.pop();
     }
 }
 

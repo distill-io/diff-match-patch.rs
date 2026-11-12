@@ -171,3 +171,33 @@ fn one_pass_shift_matches_removal() {
     }
     assert_eq!((single, several), (13176, 7192));
 }
+
+#[test]
+fn merge_rounds_do_not_grow_the_stack() {
+    // Each shift lines up the next one, so this takes one round per pair.
+    let rounds = 1_000;
+    let mut input = vec![];
+    for _ in 0..rounds {
+        input.push((0, vec!['a']));
+        input.push((1, vec!['b']));
+    }
+    input.push((0, vec!['a']));
+    input.push((1, vec!['a'; rounds]));
+    input.push((0, vec!['c']));
+    let merged = std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            let mut diffs = tokens(&input);
+            Dmp::new().diff_cleanup_merge_impl(&mut diffs);
+            pieces(diffs)
+        })
+        .expect("spawn")
+        .join()
+        .expect("merge thread");
+    let mut equality = vec!['a'; rounds + 1];
+    equality.push('c');
+    assert_eq!(
+        merged,
+        vec![(1, "ab".repeat(rounds).chars().collect()), (0, equality)]
+    );
+}
