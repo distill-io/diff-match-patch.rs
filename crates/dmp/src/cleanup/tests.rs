@@ -316,3 +316,83 @@ fn one_pass_overlap_split_matches_insertion() {
     }
     assert_eq!((single, several), (10440, 1724));
 }
+
+/// The loop the one-pass form replaced: after each split, rescan from two
+/// candidates back, or from the start.
+fn split_by_insertion(diffs: &mut Vec<TDiff>, edit_cost: i32) -> bool {
+    let mut changes = false;
+    let mut equalities: Vec<i32> = vec![];
+    let mut last_equality: Vec<char> = vec![];
+    let mut pointer: i32 = 0;
+    let (mut pre_ins, mut pre_del) = (false, false);
+    let (mut post_ins, mut post_del) = (false, false);
+    while (pointer as usize) < diffs.len() {
+        if diffs[pointer as usize].operation == 0 {
+            if diffs[pointer as usize].data.len() < edit_cost as usize && (post_del || post_ins) {
+                equalities.push(pointer);
+                (pre_ins, pre_del) = (post_ins, post_del);
+                last_equality = diffs[pointer as usize].data.clone();
+            } else {
+                equalities = vec![];
+                last_equality = vec![];
+            }
+            (post_ins, post_del) = (false, false);
+        } else {
+            if diffs[pointer as usize].operation == -1 {
+                post_del = true;
+            } else {
+                post_ins = true;
+            }
+            if !last_equality.is_empty()
+                && ((pre_ins && pre_del && post_del && post_ins)
+                    || ((last_equality.len() as i32) < edit_cost / 2
+                        && (pre_ins as i32 + pre_del as i32 + post_del as i32 + post_ins as i32)
+                            == 3))
+            {
+                let at = equalities[equalities.len() - 1] as usize;
+                diffs.insert(at, TDiff::new(-1, last_equality));
+                diffs[at + 1].operation = 1;
+                equalities.pop();
+                last_equality = vec![];
+                if pre_ins && pre_del {
+                    (post_ins, post_del) = (true, true);
+                    equalities = vec![];
+                } else {
+                    equalities.pop();
+                    pointer = equalities.last().copied().unwrap_or(-1);
+                    (post_ins, post_del) = (false, false);
+                }
+                changes = true;
+            }
+        }
+        pointer += 1;
+    }
+    changes
+}
+
+#[test]
+fn one_pass_split_matches_rescanning() {
+    let mut rng = Lcg(5);
+    // Inputs that lose one equality, and inputs that lose several.
+    let (mut single, mut several) = (0, 0);
+    for _ in 0..50_000 {
+        // Long enough for chains of candidates.
+        let mut input = vec![];
+        for _ in 0..=rng.below(4) {
+            input.extend(random_diffs(&mut rng, &['a', 'b']));
+        }
+        let edit_cost = [-1, 0, 1, 2, 3, 4, 6, 9, 14, 20][rng.below(10)];
+        let (mut expected, mut actual) = (tokens(&input), tokens(&input));
+        let changed = split_by_insertion(&mut expected, edit_cost);
+        assert_eq!(
+            split_cheap_equalities(&mut actual, edit_cost),
+            changed,
+            "{edit_cost} {input:?}"
+        );
+        let split = actual.len() - input.len();
+        assert_eq!(pieces(actual), pieces(expected), "{edit_cost} {input:?}");
+        single += (split == 1) as usize;
+        several += (split > 1) as usize;
+    }
+    assert_eq!((single, several), (6085, 3836));
+}

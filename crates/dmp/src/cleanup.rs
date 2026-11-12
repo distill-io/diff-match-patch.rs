@@ -194,97 +194,7 @@ impl Dmp {
     /// Args:
     /// diffs: Vector of diff object.
     pub(crate) fn diff_cleanup_efficiency_impl(&mut self, diffs: &mut Vec<TDiff>) {
-        if diffs.is_empty() {
-            return;
-        }
-        let mut changes: bool = false;
-        let mut equalities: Vec<i32> = vec![]; //Stack of indices where equalities are found.
-        let mut last_equality: Vec<char> = vec![]; // Always equal to diffs[equalities[-1]][1]
-        let mut pointer: i32 = 0; // Index of current position.
-        let mut pre_ins = false; // Is there an insertion operation before the last equality.
-        let mut pre_del = false; // Is there a deletion operation before the last equality.
-        let mut post_ins = false; // Is there an insertion operation after the last equality.
-        let mut post_del = false; // Is there a deletion operation after the last equality.
-        while (pointer as usize) < diffs.len() {
-            if diffs[pointer as usize].operation == 0 {
-                if diffs[pointer as usize].data.len() < self.edit_cost as usize
-                    && (post_del || post_ins)
-                {
-                    // Candidate found.
-                    equalities.push(pointer);
-                    pre_ins = post_ins;
-                    pre_del = post_del;
-                    last_equality = diffs[pointer as usize].data.clone();
-                } else {
-                    // Not a candidate, and can never become one.
-                    equalities = vec![];
-                    last_equality = vec![];
-                }
-                post_ins = false;
-                post_del = false;
-            } else {
-                // An insertion or deletion.
-                if diffs[pointer as usize].operation == -1 {
-                    post_del = true;
-                } else {
-                    post_ins = true;
-                }
-
-                /*
-                Five types to be split:
-                <ins>A</ins><del>B</del>XY<ins>C</ins><del>D</del>
-                <ins>A</ins>X<ins>C</ins><del>D</del>
-                <ins>A</ins><del>B</del>X<ins>C</ins>
-                <ins>A</del>X<ins>C</ins><del>D</del>
-                <ins>A</ins><del>B</del>X<del>C</del>
-                */
-
-                if !last_equality.is_empty()
-                    && ((pre_ins && pre_del && post_del && post_ins)
-                        || ((last_equality.len() as i32) < self.edit_cost / 2
-                            && (pre_ins as i32
-                                + pre_del as i32
-                                + post_del as i32
-                                + post_ins as i32)
-                                == 3))
-                {
-                    // Duplicate record.
-                    diffs.insert(
-                        equalities[equalities.len() - 1] as usize,
-                        TDiff::new(-1, last_equality),
-                    );
-                    // Change second copy to insert.
-                    diffs[equalities[equalities.len() - 1] as usize + 1] = TDiff::new(
-                        1,
-                        diffs[equalities[equalities.len() - 1] as usize + 1]
-                            .data
-                            .clone(),
-                    );
-                    equalities.pop(); // Throw away the equality we just deleted.
-                    last_equality = vec![];
-                    if pre_ins && pre_del {
-                        // No changes made which could affect previous entry, keep going.
-                        post_del = true;
-                        post_ins = true;
-                        equalities = vec![];
-                    } else {
-                        if !equalities.is_empty() {
-                            equalities.pop(); // Throw away the previous equality.
-                        }
-                        if !equalities.is_empty() {
-                            pointer = equalities[equalities.len() - 1];
-                        } else {
-                            pointer = -1;
-                        }
-                        post_ins = false;
-                        post_del = false;
-                    }
-                    changes = true;
-                }
-            }
-            pointer += 1;
-        }
-        if changes {
+        if split_cheap_equalities(diffs, self.edit_cost) {
             self.diff_cleanup_merge_impl(diffs);
         }
     }
@@ -476,6 +386,87 @@ fn split_overlapping_edits(diffs: &mut Vec<TDiff>) {
         } else {
             out.push(deletion);
             out.push(insertion);
+        }
+    }
+    *diffs = out;
+}
+
+/// A candidate equality still standing, with how many edit kinds the run before it has.
+struct Candidate {
+    index: usize,
+    len: usize,
+    pre_kinds: i32,
+}
+
+/// Turn every short equality whose neighbouring edits make it cheaper to
+/// edit over than to keep into a delete plus an insert. Returns whether any
+/// was turned.
+///
+/// Same result as rescanning after each one, in one pass: turning an equality
+/// only adds edit kinds to the runs beside it, so only the candidate before
+/// it needs another look.
+fn split_cheap_equalities(diffs: &mut Vec<TDiff>, edit_cost: i32) -> bool {
+    let mut candidates: Vec<Candidate> = vec![];
+    let mut turned: Vec<usize> = vec![];
+    // Edit kinds since the last standing equality.
+    let (mut post_ins, mut post_del) = (false, false);
+    for (index, diff) in diffs.iter().enumerate() {
+        let len = diff.data.len();
+        if diff.operation == 0 {
+            if len < edit_cost as usize && (post_del || post_ins) {
+                candidates.push(Candidate {
+                    index,
+                    len,
+                    pre_kinds: post_ins as i32 + post_del as i32,
+                });
+            } else {
+                // Not a candidate, and can never become one.
+                candidates.clear();
+            }
+            (post_ins, post_del) = (false, false);
+            continue;
+        }
+        if diff.operation == -1 {
+            post_del = true;
+        } else {
+            post_ins = true;
+        }
+        /*
+        Five types to be split:
+        <ins>A</ins><del>B</del>XY<ins>C</ins><del>D</del>
+        <ins>A</ins>X<ins>C</ins><del>D</del>
+        <ins>A</ins><del>B</del>X<ins>C</ins>
+        <ins>A</del>X<ins>C</ins><del>D</del>
+        <ins>A</ins><del>B</del>X<del>C</del>
+        */
+        while let Some(top) = candidates.last() {
+            let kinds = top.pre_kinds + post_ins as i32 + post_del as i32;
+            if top.len == 0 || !(kinds == 4 || ((top.len as i32) < edit_cost / 2 && kinds == 3)) {
+                break;
+            }
+            turned.push(top.index);
+            candidates.pop();
+            (post_ins, post_del) = (true, true);
+        }
+    }
+    if turned.is_empty() {
+        return false;
+    }
+    turn_into_edits(diffs, turned);
+    true
+}
+
+/// Replace each of the listed equalities with a delete plus an insert of its text.
+fn turn_into_edits(diffs: &mut Vec<TDiff>, mut equalities: Vec<usize>) {
+    equalities.sort_unstable();
+    let mut out: Vec<TDiff> = Vec::with_capacity(diffs.len() + equalities.len());
+    let mut next = equalities.into_iter().peekable();
+    for (index, diff) in diffs.drain(..).enumerate() {
+        if next.next_if_eq(&index).is_some() {
+            out.push(TDiff::new(-1, diff.data.clone()));
+            out.push(TDiff::new(1, diff.data));
+        } else {
+            out.push(diff);
         }
     }
     *diffs = out;
@@ -685,19 +676,7 @@ fn eliminate_small_equalities(diffs: &mut Vec<TDiff>) -> bool {
     if eliminated.is_empty() {
         return false;
     }
-    eliminated.sort_unstable();
-    let mut out: Vec<TDiff> = Vec::with_capacity(diffs.len() + eliminated.len());
-    let mut next = eliminated.iter().copied().peekable();
-    for (index, diff) in diffs.drain(..).enumerate() {
-        if next.peek() == Some(&index) {
-            next.next();
-            out.push(TDiff::new(-1, diff.data.clone()));
-            out.push(TDiff::new(1, diff.data));
-        } else {
-            out.push(diff);
-        }
-    }
-    *diffs = out;
+    turn_into_edits(diffs, eliminated);
     true
 }
 
