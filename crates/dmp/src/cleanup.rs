@@ -23,56 +23,7 @@ impl Dmp {
         }
         self.diff_cleanup_semantic_lossless_impl(diffs);
 
-        let mut overlap_length1: i32;
-        let mut overlap_length2: i32;
-        let mut pointer: i32 = 1;
-        while (pointer as usize) < diffs.len() {
-            if diffs[pointer as usize - 1].operation == -1 && diffs[pointer as usize].operation == 1
-            {
-                let deletion_vec: Vec<char> = diffs[pointer as usize - 1].data.clone();
-                let insertion_vec: Vec<char> = diffs[pointer as usize].data.clone();
-                overlap_length1 = self.diff_common_overlap(&deletion_vec, &insertion_vec);
-                overlap_length2 = self.diff_common_overlap(&insertion_vec, &deletion_vec);
-                if overlap_length1 >= overlap_length2 {
-                    if (overlap_length1 as f32) >= (deletion_vec.len() as f32 / 2.0)
-                        || (overlap_length1 as f32) >= (insertion_vec.len() as f32 / 2.0)
-                    {
-                        // Overlap found.  Insert an equality and trim the surrounding edits.
-                        diffs.insert(
-                            pointer as usize,
-                            TDiff::new(0, insertion_vec[..(overlap_length1 as usize)].to_vec()),
-                        );
-                        diffs[pointer as usize - 1] = TDiff::new(
-                            -1,
-                            deletion_vec[..(deletion_vec.len() - overlap_length1 as usize)]
-                                .to_vec(),
-                        );
-                        diffs[pointer as usize + 1] =
-                            TDiff::new(1, insertion_vec[(overlap_length1 as usize)..].to_vec());
-                        pointer += 1;
-                    }
-                } else if (overlap_length2 as f32) >= (deletion_vec.len() as f32 / 2.0)
-                    || (overlap_length2 as f32) >= (insertion_vec.len() as f32 / 2.0)
-                {
-                    // Reverse overlap found.
-                    // Insert an equality and swap and trim the surrounding edits.
-                    diffs.insert(
-                        pointer as usize,
-                        TDiff::new(0, deletion_vec[..(overlap_length2 as usize)].to_vec()),
-                    );
-                    let insertion_vec_len = insertion_vec.len();
-                    diffs[pointer as usize - 1] = TDiff::new(
-                        1,
-                        insertion_vec[..(insertion_vec_len - overlap_length2 as usize)].to_vec(),
-                    );
-                    diffs[pointer as usize + 1] =
-                        TDiff::new(-1, deletion_vec[(overlap_length2 as usize)..].to_vec());
-                    pointer += 1;
-                }
-                pointer += 1;
-            }
-            pointer += 1;
-        }
+        split_overlapping_edits(diffs);
     }
 
     /// Look for single edits surrounded on both sides by equalities
@@ -483,6 +434,51 @@ impl Dmp {
     pub fn diff_cleanup_merge(&mut self, diffs: &mut Vec<Diff>) {
         dispatch(self, diffs, Dmp::diff_cleanup_merge_impl);
     }
+}
+
+/// Turn a deletion followed by an insertion that share an end into two edits
+/// around the shared text.
+/// e.g: <del>abcxxx</del><ins>xxxdef</ins> -> <del>abc</del>xxx<ins>def</ins>
+/// e.g: <del>xxxabc</del><ins>defxxx</ins> -> <ins>def</ins>xxx<del>abc</del>
+/// Only extract an overlap if it is as big as the edit ahead or behind it.
+fn split_overlapping_edits(diffs: &mut Vec<TDiff>) {
+    let mut out: Vec<TDiff> = Vec::with_capacity(diffs.len());
+    let mut pieces = std::mem::take(diffs).into_iter().peekable();
+    while let Some(mut deletion) = pieces.next() {
+        let after_deletion = deletion.operation == -1;
+        let Some(mut insertion) = pieces.next_if(|next| after_deletion && next.operation == 1)
+        else {
+            out.push(deletion);
+            continue;
+        };
+        let (deletion_len, insertion_len) = (deletion.data.len(), insertion.data.len());
+        let overlap1 = engine::common_overlap(&deletion.data, &insertion.data);
+        let overlap2 = engine::common_overlap(&insertion.data, &deletion.data);
+        let big_enough = |overlap: usize| {
+            (overlap as f32) >= (deletion_len as f32 / 2.0)
+                || (overlap as f32) >= (insertion_len as f32 / 2.0)
+        };
+        if overlap1 >= overlap2 && big_enough(overlap1) {
+            // Overlap found.  Insert an equality and trim the surrounding edits.
+            let rest = insertion.data.split_off(overlap1);
+            deletion.data.truncate(deletion_len - overlap1);
+            out.push(deletion);
+            out.push(TDiff::new(0, insertion.data));
+            out.push(TDiff::new(1, rest));
+        } else if overlap1 < overlap2 && big_enough(overlap2) {
+            // Reverse overlap found.
+            // Insert an equality and swap and trim the surrounding edits.
+            let rest = deletion.data.split_off(overlap2);
+            insertion.data.truncate(insertion_len - overlap2);
+            out.push(insertion);
+            out.push(TDiff::new(0, deletion.data));
+            out.push(TDiff::new(-1, rest));
+        } else {
+            out.push(deletion);
+            out.push(insertion);
+        }
+    }
+    *diffs = out;
 }
 
 /// Join each run of edits between two equalities into one delete and one

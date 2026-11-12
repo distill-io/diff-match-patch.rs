@@ -265,3 +265,54 @@ fn one_pass_slide_matches_removal() {
     }
     assert_eq!((single, several), (4016, 207));
 }
+
+/// The loop the one-pass form replaced: insert each shared middle in place.
+fn overlaps_by_insertion(diffs: &mut Vec<TDiff>) {
+    let mut pointer = 1;
+    while pointer < diffs.len() {
+        if diffs[pointer - 1].operation == -1 && diffs[pointer].operation == 1 {
+            let deletion = diffs[pointer - 1].data.clone();
+            let insertion = diffs[pointer].data.clone();
+            let overlap1 = engine::common_overlap(&deletion, &insertion);
+            let overlap2 = engine::common_overlap(&insertion, &deletion);
+            if overlap1 >= overlap2 {
+                if (overlap1 as f32) >= (deletion.len() as f32 / 2.0)
+                    || (overlap1 as f32) >= (insertion.len() as f32 / 2.0)
+                {
+                    diffs.insert(pointer, TDiff::new(0, insertion[..overlap1].to_vec()));
+                    diffs[pointer - 1].data = deletion[..deletion.len() - overlap1].to_vec();
+                    diffs[pointer + 1].data = insertion[overlap1..].to_vec();
+                    pointer += 1;
+                }
+            } else if (overlap2 as f32) >= (deletion.len() as f32 / 2.0)
+                || (overlap2 as f32) >= (insertion.len() as f32 / 2.0)
+            {
+                diffs.insert(pointer, TDiff::new(0, deletion[..overlap2].to_vec()));
+                diffs[pointer - 1] =
+                    TDiff::new(1, insertion[..insertion.len() - overlap2].to_vec());
+                diffs[pointer + 1] = TDiff::new(-1, deletion[overlap2..].to_vec());
+                pointer += 1;
+            }
+            pointer += 1;
+        }
+        pointer += 1;
+    }
+}
+
+#[test]
+fn one_pass_overlap_split_matches_insertion() {
+    let mut rng = Lcg(4);
+    // Inputs that gain one equality, and inputs that gain several.
+    let (mut single, mut several) = (0, 0);
+    for _ in 0..50_000 {
+        let input = random_diffs(&mut rng, &['a', 'b']);
+        let (mut expected, mut actual) = (tokens(&input), tokens(&input));
+        overlaps_by_insertion(&mut expected);
+        split_overlapping_edits(&mut actual);
+        let added = actual.len() - input.len();
+        assert_eq!(pieces(actual), pieces(expected), "{input:?}");
+        single += (added == 1) as usize;
+        several += (added > 1) as usize;
+    }
+    assert_eq!((single, several), (10440, 1724));
+}
