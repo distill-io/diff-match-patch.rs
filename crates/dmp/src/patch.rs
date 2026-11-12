@@ -458,19 +458,25 @@ impl Dmp {
         if patch_size == 0 {
             return;
         }
-        let mut x: i32 = 0;
-        while (x as usize) < patches.len() {
-            if patches[x as usize].length1 <= patch_size {
-                x += 1;
+        let mut split: Vec<Patch> = Vec::with_capacity(patches.len());
+        for bigpatch in std::mem::take(patches) {
+            if bigpatch.length1 <= patch_size {
+                split.push(bigpatch);
                 continue;
             }
-            // Remove the big old patch.
-            let mut bigpatch = patches.remove(x as usize);
-            x -= 1;
             let mut start1 = bigpatch.start1;
             let mut start2 = bigpatch.start2;
             let mut precontext: Vec<char> = vec![];
-            while !bigpatch.diffs.is_empty() {
+            // The big patch is read front to back: `head` is its first diff
+            // still to split, `taken` the chars of that diff already used.
+            let pieces: Vec<(i32, Vec<char>)> = bigpatch
+                .diffs
+                .iter()
+                .map(|diff| (diff.operation, diff.text.chars().collect()))
+                .collect();
+            let mut head = 0;
+            let mut taken = 0;
+            while head < pieces.len() {
                 // Create one of several smaller patches.
                 let mut patch = Patch::new(vec![], 0, 0, 0, 0);
                 let mut empty = true;
@@ -479,19 +485,17 @@ impl Dmp {
                 if !precontext.is_empty() {
                     patch.length1 = precontext.len() as i32;
                     patch.length2 = precontext.len() as i32;
-                    patch
-                        .diffs
-                        .push(Diff::new(0, precontext.clone().iter().collect()));
+                    patch.diffs.push(Diff::new(0, precontext.iter().collect()));
                 }
-                while !bigpatch.diffs.is_empty() && patch.length1 < patch_size - self.patch_margin {
-                    let diff_type = bigpatch.diffs[0].operation;
-                    let mut diff_text: Vec<char> = bigpatch.diffs[0].text.chars().collect();
+                while head < pieces.len() && patch.length1 < patch_size - self.patch_margin {
+                    let diff_type = pieces[head].0;
+                    let diff_text = &pieces[head].1[taken..];
                     if diff_type == 1 {
                         // Insertions are harmless.
                         patch.length2 += diff_text.len() as i32;
                         start2 += diff_text.len() as i32;
-                        patch.diffs.push(bigpatch.diffs[0].clone());
-                        bigpatch.diffs.remove(0);
+                        patch.diffs.push(bigpatch.diffs[head].clone());
+                        (head, taken) = (head + 1, 0);
                         empty = false;
                     } else if diff_type == -1
                         && patch.diffs.len() == 1
@@ -505,32 +509,28 @@ impl Dmp {
                         patch
                             .diffs
                             .push(Diff::new(diff_type, diff_text.iter().collect()));
-                        bigpatch.diffs.remove(0);
+                        (head, taken) = (head + 1, 0);
                     } else {
                         // Deletion or equality.  Only take as much as we can stomach.
-                        let diff_text_len: i32 = diff_text.len() as i32;
-                        diff_text = diff_text[..min(
-                            diff_text_len,
+                        let chunk = &diff_text[..min(
+                            diff_text.len() as i32,
                             patch_size - patch.length1 - self.patch_margin,
-                        ) as usize]
-                            .to_vec();
-                        patch.length1 += diff_text.len() as i32;
-                        start1 += diff_text.len() as i32;
+                        ) as usize];
+                        patch.length1 += chunk.len() as i32;
+                        start1 += chunk.len() as i32;
                         if diff_type == 0 {
-                            patch.length2 += diff_text.len() as i32;
-                            start2 += diff_text.len() as i32;
+                            patch.length2 += chunk.len() as i32;
+                            start2 += chunk.len() as i32;
                         } else {
                             empty = false;
                         }
                         patch
                             .diffs
-                            .push(Diff::new(diff_type, diff_text.clone().iter().collect()));
-                        let temp: String = diff_text[..].iter().collect();
-                        if temp == bigpatch.diffs[0].text.clone() {
-                            bigpatch.diffs.remove(0);
+                            .push(Diff::new(diff_type, chunk.iter().collect()));
+                        if chunk.len() == diff_text.len() {
+                            (head, taken) = (head + 1, 0);
                         } else {
-                            let temp1: Vec<char> = bigpatch.diffs[0].text.chars().collect();
-                            bigpatch.diffs[0].text = temp1[diff_text.len()..].iter().collect();
+                            taken += chunk.len();
                         }
                     }
                 }
@@ -539,15 +539,22 @@ impl Dmp {
                 precontext = precontext[(precontext.len()
                     - min(self.patch_margin, precontext.len() as i32) as usize)..]
                     .to_vec();
-                // Append the end context for this patch.
-                let postcontext = if self.diff_text1(&mut bigpatch.diffs).chars().count() as i32
-                    > self.patch_margin
-                {
-                    let temp: Vec<char> = self.diff_text1(&mut bigpatch.diffs).chars().collect();
-                    temp[..self.patch_margin as usize].iter().collect()
-                } else {
-                    self.diff_text1(&mut bigpatch.diffs)
-                };
+                // Append the end context for this patch: the first
+                // patch_margin chars of the old text still to split.
+                let mut postcontext = String::new();
+                let mut wanted = self.patch_margin as usize;
+                let mut from = taken;
+                for (operation, text) in &pieces[head..] {
+                    if wanted == 0 {
+                        break;
+                    }
+                    if *operation != 1 {
+                        let until = text.len().min(from + wanted);
+                        postcontext.extend(&text[from..until]);
+                        wanted -= until - from;
+                    }
+                    from = 0;
+                }
                 let postcontext_len = postcontext.chars().count() as i32;
                 if !postcontext.is_empty() {
                     patch.length1 += postcontext_len;
@@ -561,12 +568,11 @@ impl Dmp {
                     }
                 }
                 if !empty {
-                    x += 1;
-                    patches.insert(x as usize, patch);
+                    split.push(patch);
                 }
             }
-            x += 1;
         }
+        *patches = split;
     }
 
     /// Take a list of patches and return a textual representation.
@@ -781,3 +787,7 @@ impl Dmp {
         temp1
     }
 }
+
+#[cfg(test)]
+#[path = "patch_tests.rs"]
+mod tests;
