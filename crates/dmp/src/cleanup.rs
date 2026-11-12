@@ -436,52 +436,8 @@ impl Dmp {
             diffs.pop();
         }
 
-        /*
-        Second pass: look for single edits surrounded on both sides by equalities
-        which can be shifted sideways to eliminate an equality.
-        e.g: A<ins>BA</ins>C -> <ins>AB</ins>AC
-        */
-        let mut changes = false;
-        let mut i: i32 = 1;
-        // Intentionally ignore the first and last element (don't need checking).
-        while (i as usize) + 1 < diffs.len() {
-            if diffs[i as usize - 1].operation == 0 && diffs[i as usize + 1].operation == 0 {
-                // This is a single edit surrounded by equalities.
-                if diffs[i as usize]
-                    .data
-                    .ends_with(&diffs[i as usize - 1].data)
-                {
-                    // Shift the edit over the previous equality.
-                    if !diffs[i as usize - 1].data.is_empty() {
-                        let eq1 = diffs[i as usize - 1].data.clone();
-                        let keep = diffs[i as usize].data.len() - eq1.len();
-                        let mut shifted = eq1.clone();
-                        shifted.extend_from_slice(&diffs[i as usize].data[..keep]);
-                        diffs[i as usize].data = shifted;
-                        let mut next = eq1;
-                        next.extend_from_slice(&diffs[i as usize + 1].data);
-                        diffs[i as usize + 1].data = next;
-                    }
-                    diffs.remove(i as usize - 1);
-                    changes = true;
-                } else if diffs[i as usize]
-                    .data
-                    .starts_with(&diffs[i as usize + 1].data)
-                {
-                    // Shift the edit over the next equality.
-                    let eq2 = diffs[i as usize + 1].data.clone();
-                    diffs[i as usize - 1].data.extend_from_slice(&eq2);
-                    let mut edit = diffs[i as usize].data[eq2.len()..].to_vec();
-                    edit.extend_from_slice(&eq2);
-                    diffs[i as usize].data = edit;
-                    diffs.remove(i as usize + 1);
-                    changes = true;
-                }
-            }
-            i += 1;
-        }
         // If shifts were made, the diff needs reordering and another shift sweep.
-        if changes {
+        if shift_edits_over_equalities(diffs) {
             self.diff_cleanup_merge_impl(diffs);
         }
     }
@@ -616,6 +572,51 @@ impl Dmp {
     pub fn diff_cleanup_merge(&mut self, diffs: &mut Vec<Diff>) {
         dispatch(self, diffs, Dmp::diff_cleanup_merge_impl);
     }
+}
+
+/// Look for single edits surrounded on both sides by equalities which can be
+/// shifted sideways to eliminate an equality, e.g. A<ins>BA</ins>C ->
+/// <ins>AB</ins>AC. Returns whether any edit moved.
+fn shift_edits_over_equalities(diffs: &mut Vec<TDiff>) -> bool {
+    let mut changes = false;
+    // diffs[..kept] is settled, diffs[next] is the edit under test, and the
+    // slots between are left over from removed equalities.
+    let (mut kept, mut next) = (1, 1);
+    while next + 1 < diffs.len() {
+        if diffs[kept - 1].operation == 0 && diffs[next + 1].operation == 0 {
+            if diffs[next].data.ends_with(&diffs[kept - 1].data) {
+                // Shift the edit over the previous equality.
+                let mut equality = std::mem::take(&mut diffs[kept - 1].data);
+                diffs[next].data.rotate_right(equality.len());
+                equality.extend_from_slice(&diffs[next + 1].data);
+                diffs[next + 1].data = equality;
+                diffs.swap(kept - 1, next);
+                diffs.swap(kept, next + 1);
+                kept += 1;
+                next += 2;
+                changes = true;
+                continue;
+            }
+            if diffs[next].data.starts_with(&diffs[next + 1].data) {
+                // Shift the edit over the next equality.
+                let equality = std::mem::take(&mut diffs[next + 1].data);
+                diffs[next].data.rotate_left(equality.len());
+                diffs[kept - 1].data.extend_from_slice(&equality);
+                diffs.swap(kept, next);
+                kept += 1;
+                next += 2;
+                changes = true;
+                continue;
+            }
+        }
+        diffs.swap(kept, next);
+        kept += 1;
+        next += 1;
+    }
+    if changes {
+        diffs.drain(kept..next);
+    }
+    changes
 }
 
 /// An equality still standing, with the edit lengths between it and the next one.

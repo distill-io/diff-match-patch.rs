@@ -115,3 +115,59 @@ fn merge_leaves_nothing_of_empty_pieces() {
         assert_eq!(pieces(diffs), vec![], "{input:?}");
     }
 }
+
+/// The sweep the one-pass form replaced: remove each crossed equality in place.
+fn shift_by_removal(diffs: &mut Vec<TDiff>) -> bool {
+    let mut changes = false;
+    let mut i = 1;
+    while i + 1 < diffs.len() {
+        if diffs[i - 1].operation == 0 && diffs[i + 1].operation == 0 {
+            if diffs[i].data.ends_with(&diffs[i - 1].data) {
+                if !diffs[i - 1].data.is_empty() {
+                    let eq1 = diffs[i - 1].data.clone();
+                    let keep = diffs[i].data.len() - eq1.len();
+                    let mut shifted = eq1.clone();
+                    shifted.extend_from_slice(&diffs[i].data[..keep]);
+                    diffs[i].data = shifted;
+                    let mut next = eq1;
+                    next.extend_from_slice(&diffs[i + 1].data);
+                    diffs[i + 1].data = next;
+                }
+                diffs.remove(i - 1);
+                changes = true;
+            } else if diffs[i].data.starts_with(&diffs[i + 1].data) {
+                let eq2 = diffs[i + 1].data.clone();
+                diffs[i - 1].data.extend_from_slice(&eq2);
+                let mut edit = diffs[i].data[eq2.len()..].to_vec();
+                edit.extend_from_slice(&eq2);
+                diffs[i].data = edit;
+                diffs.remove(i + 1);
+                changes = true;
+            }
+        }
+        i += 1;
+    }
+    changes
+}
+
+#[test]
+fn one_pass_shift_matches_removal() {
+    let mut rng = Lcg(2);
+    // Inputs that lose one equality, and inputs that lose several.
+    let (mut single, mut several) = (0, 0);
+    for _ in 0..50_000 {
+        let input = random_diffs(&mut rng);
+        let (mut expected, mut actual) = (tokens(&input), tokens(&input));
+        let changed = shift_by_removal(&mut expected);
+        assert_eq!(
+            shift_edits_over_equalities(&mut actual),
+            changed,
+            "{input:?}"
+        );
+        let removed = input.len() - actual.len();
+        assert_eq!(pieces(actual), pieces(expected), "{input:?}");
+        single += (removed == 1) as usize;
+        several += (removed > 1) as usize;
+    }
+    assert_eq!((single, several), (13176, 7192));
+}
