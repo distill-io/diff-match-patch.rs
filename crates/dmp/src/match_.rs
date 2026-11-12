@@ -149,13 +149,14 @@ fn bitap(dmp: &mut Dmp, text: &[char], patern: &[char], loc: i32) -> i32 {
     let mut bin_max: i32 = (patern.len() + text.len()) as i32;
     // Empty initialization added to appease pychecker.
     let mut last_rd: Vec<u64> = vec![];
+    // rd[i] and last_rd[i] hold the bit arrays' entries at j = base + i.
+    let mut base: i32 = 0;
     for d in 0..patern.len() {
         /*
         Scan for the best match each iteration allows for one more error.
         Run a binary search to determine how far from 'loc' we can stray at
         this error level.
         */
-        let mut rd: Vec<u64> = vec![];
         bin_min = 0;
         bin_mid = bin_max;
         // Use the result from this iteration as the maximum for the next.
@@ -170,8 +171,17 @@ fn bitap(dmp: &mut Dmp, text: &[char], patern: &[char], loc: i32) -> i32 {
         bin_max = bin_mid;
         let mut start = max(1, loc - bin_mid + 1);
         let finish = min(loc + bin_mid, text.len() as i32) + patern.len() as i32;
-        rd.resize((finish + 2) as usize, 0);
-        rd[(finish + 1) as usize] = (1u64 << d) - 1;
+        if d == 0 && loc >= 0 {
+            // Later levels never start lower: bin_mid and finish only shrink,
+            // and a lowered start stays above 2 * loc - finish.
+            let (loc, bin_mid, finish) = (loc as i64, bin_mid as i64, finish as i64);
+            base = (loc - bin_mid + 1)
+                .min(2 * loc - finish + 1)
+                .min(finish + 1)
+                .max(1) as i32;
+        }
+        let mut rd: Vec<u64> = vec![0; (finish + 2 - base) as usize];
+        rd[(finish + 1 - base) as usize] = (1u64 << d) - 1;
         let mut j = finish;
         while j >= start {
             let char_match: u64;
@@ -189,15 +199,16 @@ fn bitap(dmp: &mut Dmp, text: &[char], patern: &[char], loc: i32) -> i32 {
                     }
                 }
             }
+            let i = (j - base) as usize;
             if d == 0 {
                 // First pass: exact match.
-                rd[j as usize] = ((rd[j as usize + 1] << 1) | 1) & char_match;
+                rd[i] = ((rd[i + 1] << 1) | 1) & char_match;
             } else {
-                rd[j as usize] = (((rd[j as usize + 1] << 1) | 1) & char_match)
-                    | (((last_rd[j as usize + 1] | last_rd[j as usize]) << 1) | 1)
-                    | last_rd[j as usize + 1];
+                rd[i] = (((rd[i + 1] << 1) | 1) & char_match)
+                    | (((last_rd[i + 1] | last_rd[i]) << 1) | 1)
+                    | last_rd[i + 1];
             }
-            if (rd[j as usize] & matchmask) != 0 {
+            if (rd[i] & matchmask) != 0 {
                 let score: f32 = bitap_score(dmp, d as i32, j - 1, loc, patern.len());
                 // This match will almost certainly be better than any existing match.
                 // But check anyway.
@@ -254,3 +265,7 @@ fn alphabet(patern: &[char]) -> HashMap<char, u64> {
     }
     s
 }
+
+#[cfg(test)]
+#[path = "match_tests.rs"]
+mod tests;

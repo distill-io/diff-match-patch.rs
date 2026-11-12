@@ -19,64 +19,7 @@ impl Dmp {
     /// patch: The patch to grow.
     /// text: Source text.
     pub fn patch_add_context(&mut self, patch: &mut Patch, text: &mut Vec<char>) {
-        if text.is_empty() {
-            return;
-        }
-        let mut pattern: Vec<char> =
-            text[patch.start2 as usize..(patch.length1 as usize + patch.start2 as usize)].to_vec();
-        let mut padding: i32 = 0;
-
-        // Grow the pattern while it is ambiguous (occurs more than once) in
-        // text. A pattern is always a slice of text, so it occurs at least
-        // once; the empty pattern (insertion with no margin yet) mirrors the
-        // oracle's first-index != last-index check: unique only in 1-char text.
-        let ambiguous = |text: &[char], pattern: &[char]| {
-            if pattern.is_empty() {
-                text.len() != 1
-            } else {
-                engine::occurs_twice(text, pattern)
-            }
-        };
-        let mut rst = 0;
-        while ambiguous(text, &pattern)
-            && (pattern.len() as i32) < (self.match_maxbits - self.patch_margin * 2)
-        {
-            padding += self.patch_margin;
-            pattern = text[max(0, patch.start2 - padding) as usize
-                ..min(text.len() as i32, patch.start2 + patch.length1 + padding) as usize]
-                .to_vec();
-            rst += 1;
-            if rst > 5 {
-                break;
-            }
-        }
-        // Add one chunk for good luck.
-        padding += self.patch_margin;
-
-        // Add the prefix.
-        let prefix: String = text[max(0, patch.start2 - padding) as usize..patch.start2 as usize]
-            .iter()
-            .collect();
-        let prefix_length = prefix.chars().count() as i32;
-        if !prefix.is_empty() {
-            patch.diffs.insert(0, Diff::new(0, prefix.clone()));
-        }
-
-        // Add the suffix.
-        let suffix: String = text[(patch.start2 + patch.length1) as usize
-            ..min(text.len() as i32, patch.start2 + patch.length1 + padding) as usize]
-            .iter()
-            .collect();
-        let suffix_length = suffix.chars().count() as i32;
-        if !suffix.is_empty() {
-            patch.diffs.push(Diff::new(0, suffix));
-        }
-        // Roll back the start points.
-        patch.start1 -= prefix_length;
-        patch.start2 -= prefix_length;
-        // Extend lengths.
-        patch.length1 += prefix_length + suffix_length;
-        patch.length2 += prefix_length + suffix_length;
+        add_context(self, patch, text, &[]);
     }
 
     /// Compute a list of patches to turn text1 into text2.
@@ -134,8 +77,13 @@ impl Dmp {
         let mut patch: Patch = Patch::new(vec![], 0, 0, 0, 0);
         let mut char_count1 = 0; // Number of characters into the text1 string.
         let mut char_count2 = 0; // Number of characters into the text2 string.
-        let mut prepatch: Vec<char> = text1.chars().collect(); // Recreate the patches to determine context info.
-        let mut postpatch: Vec<char> = prepatch.clone();
+        let source: Vec<char> = text1.chars().collect();
+        // The text with the edits so far applied is `done` followed by `rest`.
+        let mut done: Vec<char> = vec![];
+        let mut rest: &[char] = &source;
+        // The text before the open patch's edits is `done[..prepatch_done]`
+        // followed by `prepatch_rest`; context is read from it.
+        let (mut prepatch_done, mut prepatch_rest) = (0, rest);
         for i in 0..diffs.len() {
             let temp1: &Vec<char> = &(diffs[i].text.chars().collect());
             if patch.diffs.is_empty() && diffs[i].operation != 0 {
@@ -149,20 +97,16 @@ impl Dmp {
                     .diffs
                     .push(Diff::new(diffs[i].operation, diffs[i].text.clone()));
                 patch.length2 += temp1.len() as i32;
-                postpatch.splice(
-                    char_count2 as usize..char_count2 as usize,
-                    temp1.iter().copied(),
-                );
+                rest = keep_until(&mut done, rest, char_count2 as usize);
+                done.extend_from_slice(temp1);
             } else if diffs[i].operation == -1 {
                 // Deletion.
                 patch
                     .diffs
                     .push(Diff::new(diffs[i].operation, diffs[i].text.clone()));
                 patch.length1 += temp1.len() as i32;
-                postpatch.splice(
-                    char_count2 as usize..char_count2 as usize + temp1.len(),
-                    std::iter::empty(),
-                );
+                rest = keep_until(&mut done, rest, char_count2 as usize);
+                rest = &rest[temp1.len()..];
             } else if temp1.len() as i32 <= self.patch_margin * 2
                 && !patch.diffs.is_empty()
                 && i != diffs.len() - 1
@@ -176,10 +120,10 @@ impl Dmp {
             } else if temp1.len() as i32 >= 2 * self.patch_margin {
                 // Time for a new patch.
                 if !patch.diffs.is_empty() {
-                    self.patch_add_context(&mut patch, &mut prepatch);
+                    add_context(self, &mut patch, &done[..prepatch_done], prepatch_rest);
                     patches.push(patch);
                     patch = Patch::new(vec![], 0, 0, 0, 0);
-                    prepatch = postpatch.clone();
+                    (prepatch_done, prepatch_rest) = (done.len(), rest);
                     char_count1 = char_count2;
                 }
             }
@@ -195,8 +139,7 @@ impl Dmp {
 
         // Pick up the leftover patch if not empty.
         if !patch.diffs.is_empty() {
-            self.patch_add_context(&mut patch, &mut prepatch);
-            // println!("{:?}", prepatch);
+            add_context(self, &mut patch, &done[..prepatch_done], prepatch_rest);
             patches.push(patch);
         }
         patches
@@ -267,7 +210,14 @@ impl Dmp {
         // has an effective expected position of 22.
         let mut delta: i32 = 0;
         let mut results: Vec<bool> = vec![false; patches_copy.len()];
-        for x in 0..patches_copy.len() {
+        let (mut text, first) = apply_exact_run(
+            self.match_maxbits,
+            &patches_copy,
+            &text,
+            &mut results,
+            &mut delta,
+        );
+        for x in first..patches_copy.len() {
             let expected_loc: i32 = patches_copy[x].start2 + delta;
             let text1: Vec<char> = diff_text1_chars(&patches_copy[x].diffs);
             let mut start_loc: i32;
@@ -458,19 +408,25 @@ impl Dmp {
         if patch_size == 0 {
             return;
         }
-        let mut x: i32 = 0;
-        while (x as usize) < patches.len() {
-            if patches[x as usize].length1 <= patch_size {
-                x += 1;
+        let mut split: Vec<Patch> = Vec::with_capacity(patches.len());
+        for bigpatch in std::mem::take(patches) {
+            if bigpatch.length1 <= patch_size {
+                split.push(bigpatch);
                 continue;
             }
-            // Remove the big old patch.
-            let mut bigpatch = patches.remove(x as usize);
-            x -= 1;
             let mut start1 = bigpatch.start1;
             let mut start2 = bigpatch.start2;
             let mut precontext: Vec<char> = vec![];
-            while !bigpatch.diffs.is_empty() {
+            // The big patch is read front to back: `head` is its first diff
+            // still to split, `taken` the chars of that diff already used.
+            let pieces: Vec<(i32, Vec<char>)> = bigpatch
+                .diffs
+                .iter()
+                .map(|diff| (diff.operation, diff.text.chars().collect()))
+                .collect();
+            let mut head = 0;
+            let mut taken = 0;
+            while head < pieces.len() {
                 // Create one of several smaller patches.
                 let mut patch = Patch::new(vec![], 0, 0, 0, 0);
                 let mut empty = true;
@@ -479,19 +435,17 @@ impl Dmp {
                 if !precontext.is_empty() {
                     patch.length1 = precontext.len() as i32;
                     patch.length2 = precontext.len() as i32;
-                    patch
-                        .diffs
-                        .push(Diff::new(0, precontext.clone().iter().collect()));
+                    patch.diffs.push(Diff::new(0, precontext.iter().collect()));
                 }
-                while !bigpatch.diffs.is_empty() && patch.length1 < patch_size - self.patch_margin {
-                    let diff_type = bigpatch.diffs[0].operation;
-                    let mut diff_text: Vec<char> = bigpatch.diffs[0].text.chars().collect();
+                while head < pieces.len() && patch.length1 < patch_size - self.patch_margin {
+                    let diff_type = pieces[head].0;
+                    let diff_text = &pieces[head].1[taken..];
                     if diff_type == 1 {
                         // Insertions are harmless.
                         patch.length2 += diff_text.len() as i32;
                         start2 += diff_text.len() as i32;
-                        patch.diffs.push(bigpatch.diffs[0].clone());
-                        bigpatch.diffs.remove(0);
+                        patch.diffs.push(bigpatch.diffs[head].clone());
+                        (head, taken) = (head + 1, 0);
                         empty = false;
                     } else if diff_type == -1
                         && patch.diffs.len() == 1
@@ -505,32 +459,28 @@ impl Dmp {
                         patch
                             .diffs
                             .push(Diff::new(diff_type, diff_text.iter().collect()));
-                        bigpatch.diffs.remove(0);
+                        (head, taken) = (head + 1, 0);
                     } else {
                         // Deletion or equality.  Only take as much as we can stomach.
-                        let diff_text_len: i32 = diff_text.len() as i32;
-                        diff_text = diff_text[..min(
-                            diff_text_len,
+                        let chunk = &diff_text[..min(
+                            diff_text.len() as i32,
                             patch_size - patch.length1 - self.patch_margin,
-                        ) as usize]
-                            .to_vec();
-                        patch.length1 += diff_text.len() as i32;
-                        start1 += diff_text.len() as i32;
+                        ) as usize];
+                        patch.length1 += chunk.len() as i32;
+                        start1 += chunk.len() as i32;
                         if diff_type == 0 {
-                            patch.length2 += diff_text.len() as i32;
-                            start2 += diff_text.len() as i32;
+                            patch.length2 += chunk.len() as i32;
+                            start2 += chunk.len() as i32;
                         } else {
                             empty = false;
                         }
                         patch
                             .diffs
-                            .push(Diff::new(diff_type, diff_text.clone().iter().collect()));
-                        let temp: String = diff_text[..].iter().collect();
-                        if temp == bigpatch.diffs[0].text.clone() {
-                            bigpatch.diffs.remove(0);
+                            .push(Diff::new(diff_type, chunk.iter().collect()));
+                        if chunk.len() == diff_text.len() {
+                            (head, taken) = (head + 1, 0);
                         } else {
-                            let temp1: Vec<char> = bigpatch.diffs[0].text.chars().collect();
-                            bigpatch.diffs[0].text = temp1[diff_text.len()..].iter().collect();
+                            taken += chunk.len();
                         }
                     }
                 }
@@ -539,15 +489,22 @@ impl Dmp {
                 precontext = precontext[(precontext.len()
                     - min(self.patch_margin, precontext.len() as i32) as usize)..]
                     .to_vec();
-                // Append the end context for this patch.
-                let postcontext = if self.diff_text1(&mut bigpatch.diffs).chars().count() as i32
-                    > self.patch_margin
-                {
-                    let temp: Vec<char> = self.diff_text1(&mut bigpatch.diffs).chars().collect();
-                    temp[..self.patch_margin as usize].iter().collect()
-                } else {
-                    self.diff_text1(&mut bigpatch.diffs)
-                };
+                // Append the end context for this patch: the first
+                // patch_margin chars of the old text still to split.
+                let mut postcontext = String::new();
+                let mut wanted = self.patch_margin as usize;
+                let mut from = taken;
+                for (operation, text) in &pieces[head..] {
+                    if wanted == 0 {
+                        break;
+                    }
+                    if *operation != 1 {
+                        let until = text.len().min(from + wanted);
+                        postcontext.extend(&text[from..until]);
+                        wanted -= until - from;
+                    }
+                    from = 0;
+                }
                 let postcontext_len = postcontext.chars().count() as i32;
                 if !postcontext.is_empty() {
                     patch.length1 += postcontext_len;
@@ -561,12 +518,11 @@ impl Dmp {
                     }
                 }
                 if !empty {
-                    x += 1;
-                    patches.insert(x as usize, patch);
+                    split.push(patch);
                 }
             }
-            x += 1;
         }
+        *patches = split;
     }
 
     /// Take a list of patches and return a textual representation.
@@ -607,6 +563,144 @@ impl Dmp {
             .next()
             .unwrap_or_else(|| panic!("Invalid patch string: {}", textline))
     }
+}
+
+/// `patch_add_context` over a text held as two parts, `head` then `tail`.
+fn add_context(dmp: &Dmp, patch: &mut Patch, head: &[char], tail: &[char]) {
+    let text_len = head.len() + tail.len();
+    if text_len == 0 {
+        return;
+    }
+    let mut pattern: Vec<char> = span(
+        head,
+        tail,
+        patch.start2 as usize,
+        patch.length1 as usize + patch.start2 as usize,
+    );
+    let mut padding: i32 = 0;
+
+    // Grow the pattern while it is ambiguous (occurs more than once) in
+    // text. A pattern is always a slice of text, so it occurs at least
+    // once; the empty pattern (insertion with no margin yet) mirrors the
+    // oracle's first-index != last-index check: unique only in 1-char text.
+    let ambiguous = |pattern: &[char]| {
+        if pattern.is_empty() {
+            text_len != 1
+        } else {
+            engine::occurs_twice(head, tail, pattern)
+        }
+    };
+    let mut rst = 0;
+    while ambiguous(&pattern) && (pattern.len() as i32) < (dmp.match_maxbits - dmp.patch_margin * 2)
+    {
+        padding += dmp.patch_margin;
+        pattern = span(
+            head,
+            tail,
+            max(0, patch.start2 - padding) as usize,
+            min(text_len as i32, patch.start2 + patch.length1 + padding) as usize,
+        );
+        rst += 1;
+        if rst > 5 {
+            break;
+        }
+    }
+    // Add one chunk for good luck.
+    padding += dmp.patch_margin;
+
+    // Add the prefix.
+    let prefix: String = span(
+        head,
+        tail,
+        max(0, patch.start2 - padding) as usize,
+        patch.start2 as usize,
+    )
+    .iter()
+    .collect();
+    let prefix_length = prefix.chars().count() as i32;
+    if !prefix.is_empty() {
+        patch.diffs.insert(0, Diff::new(0, prefix.clone()));
+    }
+
+    // Add the suffix.
+    let suffix: String = span(
+        head,
+        tail,
+        (patch.start2 + patch.length1) as usize,
+        min(text_len as i32, patch.start2 + patch.length1 + padding) as usize,
+    )
+    .iter()
+    .collect();
+    let suffix_length = suffix.chars().count() as i32;
+    if !suffix.is_empty() {
+        patch.diffs.push(Diff::new(0, suffix));
+    }
+    // Roll back the start points.
+    patch.start1 -= prefix_length;
+    patch.start2 -= prefix_length;
+    // Extend lengths.
+    patch.length1 += prefix_length + suffix_length;
+    patch.length2 += prefix_length + suffix_length;
+}
+
+/// Applies the leading patches that match exactly where expected and change
+/// nothing before the previous one's change ends; returns the patched text and
+/// how many patches that was.
+fn apply_exact_run(
+    maxbits: i32,
+    patches: &[Patch],
+    text: &[char],
+    results: &mut [bool],
+    delta: &mut i32,
+) -> (Vec<char>, usize) {
+    // The text so far is `done` followed by `text[pos..]`.
+    let (mut done, mut pos, mut first) = (vec![], 0, 0);
+    while first < patches.len() {
+        let expected_loc: i32 = patches[first].start2 + *delta;
+        let text1: Vec<char> = diff_text1_chars(&patches[first].diffs);
+        let text2: Vec<char> = diff_text2_chars(&patches[first].diffs);
+        // The patch keeps its first `same` and last `same_end` chars.
+        let same = engine::common_prefix(&text1, &text2);
+        let same_end = engine::common_suffix(&text1[same..], &text2[same..]);
+        let len = done.len() + text.len() - pos;
+        let loc = max(0, expected_loc) as usize;
+        if text1.len() as i32 > maxbits
+            || loc + same < done.len()
+            || loc + text1.len() > len
+            || span(&done, &text[pos..], loc, loc + text1.len()) != text1
+        {
+            break;
+        }
+        // The matcher returns the clamped loc for any exact match there.
+        results[first] = true;
+        *delta = loc as i32 - expected_loc;
+        let kept = loc + same - done.len();
+        done.extend_from_slice(&text[pos..pos + kept]);
+        done.extend_from_slice(&text2[same..text2.len() - same_end]);
+        pos += kept + text1.len() - same - same_end;
+        first += 1;
+    }
+    done.extend_from_slice(&text[pos..]);
+    (done, first)
+}
+
+/// The chars `from..to` of the text `head` followed by `tail`; panics where
+/// slicing the joined text would.
+fn span(head: &[char], tail: &[char], from: usize, to: usize) -> Vec<char> {
+    if to <= head.len() {
+        head[from..to].to_vec()
+    } else if from >= head.len() {
+        tail[from - head.len()..to - head.len()].to_vec()
+    } else {
+        [&head[from..], &tail[..to - head.len()]].concat()
+    }
+}
+
+/// Moves the chars of `rest` that come before position `at` onto `done`.
+fn keep_until<'a>(done: &mut Vec<char>, rest: &'a [char], at: usize) -> &'a [char] {
+    let (kept, rest) = rest.split_at(at - done.len());
+    done.extend_from_slice(kept);
+    rest
 }
 
 /// diff_text1 (equalities + deletions) as chars — patch_apply works entirely
@@ -781,3 +875,7 @@ impl Dmp {
         temp1
     }
 }
+
+#[cfg(test)]
+#[path = "patch_tests.rs"]
+mod tests;

@@ -2,6 +2,7 @@
 //! fuzzing crate). Each run is deterministic from the fixed seeds.
 
 use diff_match_patch::{Diff, Dmp};
+use std::collections::HashMap;
 
 struct Lcg(u64);
 impl Lcg {
@@ -45,7 +46,7 @@ fn char_mode_roundtrips() {
         let len = (rng.next() % 80) as usize;
         let t2 = gen_text(&mut rng, &alphabet, len);
         let mut d = Dmp::new();
-        let mut diffs = d.diff_main(&t1, &t2, rng.next().is_multiple_of(2));
+        let mut diffs = d.diff_main(&t1, &t2, rng.next() % 2 == 0);
         assert_eq!(rebuild(&diffs), (t1.clone(), t2.clone()));
 
         let delta = d.diff_todelta(&mut diffs);
@@ -58,6 +59,44 @@ fn char_mode_roundtrips() {
         let (applied, _) = d.patch_apply(&mut reparsed, &t1);
         let applied: String = applied.into_iter().collect();
         assert_eq!(applied, t2);
+    }
+}
+
+/// `diff_words_tochars` packs like running text1 then text2 through the
+/// per-text munger, whatever the texts share at either end.
+#[test]
+fn word_packing_matches_the_per_text_munger() {
+    // é/è share a first byte and é/© a last byte: shared bytes can end mid-char.
+    let alphabet = [
+        "a", "b", " ", "\n", "\u{a0}", "\u{3000}", "é", "è", "©", "日",
+    ];
+    let mut rng = Lcg(11);
+    for _ in 0..20_000 {
+        let len = (rng.next() % 30) as usize;
+        let mut pieces: Vec<&str> = (0..len)
+            .map(|_| alphabet[(rng.next() as usize) % alphabet.len()])
+            .collect();
+        let t1 = pieces.concat();
+        for _ in 0..rng.next() % 4 {
+            let at = (rng.next() as usize) % (pieces.len() + 1);
+            if at < pieces.len() && rng.next() % 2 == 0 {
+                pieces.remove(at);
+            } else {
+                pieces.insert(at, alphabet[(rng.next() as usize) % alphabet.len()]);
+            }
+        }
+        let t2 = pieces.concat();
+
+        let mut d = Dmp::new();
+        let mut words = vec![String::new()];
+        let mut ids = HashMap::new();
+        let chars1 = d.diff_words_tochars_munge(&t1, &mut words, &mut ids);
+        let chars2 = d.diff_words_tochars_munge(&t2, &mut words, &mut ids);
+        assert_eq!(
+            d.diff_words_tochars(&t1, &t2),
+            (chars1, chars2, words),
+            "{t1:?} {t2:?}"
+        );
     }
 }
 
@@ -98,7 +137,7 @@ mod grapheme_props {
             let mut d = Dmp::new();
             d.segmentation = Segmentation::Grapheme;
             // checklines varies: the line-mode speedup must also stay cluster-atomic.
-            let mut diffs = d.diff_main(&t1, &t2, rng.next().is_multiple_of(2));
+            let mut diffs = d.diff_main(&t1, &t2, rng.next() % 2 == 0);
             assert_eq!(rebuild(&diffs), (t1.clone(), t2.clone()));
 
             let parts1: usize = diffs
@@ -189,7 +228,7 @@ mod grapheme_props {
             grapheme_mode.segmentation = Segmentation::Grapheme;
             // Single-char clusters pack to themselves, so both modes run the
             // identical pipeline (line mode included) on identical tokens.
-            let checklines = rng.next().is_multiple_of(2);
+            let checklines = rng.next() % 2 == 0;
             assert_eq!(
                 char_mode.diff_main(&t1, &t2, checklines),
                 grapheme_mode.diff_main(&t1, &t2, checklines)

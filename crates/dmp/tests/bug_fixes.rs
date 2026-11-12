@@ -3,6 +3,7 @@
 //! must stay green permanently.
 
 use diff_match_patch::{Diff, Dmp};
+use std::collections::HashMap;
 
 /// Two large multi-line texts sharing big common blocks interleaved with small
 /// distinct lines. Both sides exceed 100 chars so `checklines = true` takes the
@@ -129,6 +130,17 @@ fn word_tokens_round_trip_past_the_surrogate_gap() {
     let mut dmp = Dmp::new();
 
     let (chars1, chars2, words) = dmp.diff_words_tochars(&old, &new);
+
+    // The per-text munger numbers words on its own and must skip the gap too.
+    let mut munged_words = vec![String::new()];
+    let mut munged_ids = HashMap::new();
+    let munged1 = dmp.diff_words_tochars_munge(&old, &mut munged_words, &mut munged_ids);
+    let munged2 = dmp.diff_words_tochars_munge(&new, &mut munged_words, &mut munged_ids);
+    assert_eq!(
+        (&munged1, &munged2, &munged_words),
+        (&chars1, &chars2, &words)
+    );
+
     let mut diffs = vec![Diff::new(-1, chars1), Diff::new(1, chars2)];
     dmp.diff_chars_tolines(&mut diffs, &words);
 

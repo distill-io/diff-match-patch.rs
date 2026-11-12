@@ -16,129 +16,14 @@ impl Dmp {
     /// Args:
     /// diffs: Vectors of diff object.
     pub(crate) fn diff_cleanup_semantic_impl(&mut self, diffs: &mut Vec<TDiff>) {
-        let mut changes = false;
-        let mut equalities: Vec<i32> = vec![]; // Stack of indices where equalities are found.
-        let mut last_equality: Vec<char> = vec![]; // Always equal to diffs[equalities[-1]][1]
-        let mut pointer: i32 = 0; // Index of current position.
-                                  // Number of chars that changed prior to the equality.
-        let mut length_insertions1 = 0;
-        let mut length_deletions1 = 0;
-        // Number of chars that changed after the equality.
-        let mut length_insertions2 = 0;
-        let mut length_deletions2 = 0;
-        while (pointer as usize) < diffs.len() {
-            if diffs[pointer as usize].operation == 0 {
-                // Equality found.
-                equalities.push(pointer);
-                length_insertions1 = length_insertions2;
-                length_insertions2 = 0;
-                length_deletions1 = length_deletions2;
-                length_deletions2 = 0;
-                last_equality = diffs[pointer as usize].data.clone();
-            } else {
-                // An insertion or deletion.
-                if diffs[pointer as usize].operation == 1 {
-                    length_insertions2 += diffs[pointer as usize].data.len() as i32;
-                } else {
-                    length_deletions2 += diffs[pointer as usize].data.len() as i32;
-                    // Eliminate an equality that is smaller or equal to the edits on both
-                    // sides of it.
-                }
-                let last_equality_len = last_equality.len() as i32;
-                if last_equality_len > 0
-                    && last_equality_len <= max(length_insertions1, length_deletions1)
-                    && last_equality_len <= max(length_insertions2, length_deletions2)
-                {
-                    // Duplicate record.
-                    diffs.insert(
-                        equalities[equalities.len() - 1] as usize,
-                        TDiff::new(-1, last_equality.clone()),
-                    );
-                    // Change second copy to insert.
-                    diffs[equalities[equalities.len() - 1] as usize + 1] = TDiff::new(
-                        1,
-                        diffs[equalities[equalities.len() - 1] as usize + 1]
-                            .data
-                            .clone(),
-                    );
-                    // Throw away the equality we just deleted.
-                    equalities.pop();
-                    // Throw away the previous equality (it needs to be reevaluated).
-                    if !equalities.is_empty() {
-                        equalities.pop();
-                    }
-                    if !equalities.is_empty() {
-                        pointer = equalities[equalities.len() - 1];
-                    } else {
-                        pointer = -1;
-                    }
-                    // Reset the counters.
-                    length_insertions1 = 0;
-                    length_deletions1 = 0;
-                    length_insertions2 = 0;
-                    length_deletions2 = 0;
-                    last_equality = vec![];
-                    changes = true;
-                }
-            }
-            pointer += 1;
-        }
+        let changes = eliminate_small_equalities(diffs);
         // Normalize the diff.
         if changes {
             self.diff_cleanup_merge_impl(diffs);
         }
         self.diff_cleanup_semantic_lossless_impl(diffs);
 
-        let mut overlap_length1: i32;
-        let mut overlap_length2: i32;
-        pointer = 1;
-        while (pointer as usize) < diffs.len() {
-            if diffs[pointer as usize - 1].operation == -1 && diffs[pointer as usize].operation == 1
-            {
-                let deletion_vec: Vec<char> = diffs[pointer as usize - 1].data.clone();
-                let insertion_vec: Vec<char> = diffs[pointer as usize].data.clone();
-                overlap_length1 = self.diff_common_overlap(&deletion_vec, &insertion_vec);
-                overlap_length2 = self.diff_common_overlap(&insertion_vec, &deletion_vec);
-                if overlap_length1 >= overlap_length2 {
-                    if (overlap_length1 as f32) >= (deletion_vec.len() as f32 / 2.0)
-                        || (overlap_length1 as f32) >= (insertion_vec.len() as f32 / 2.0)
-                    {
-                        // Overlap found.  Insert an equality and trim the surrounding edits.
-                        diffs.insert(
-                            pointer as usize,
-                            TDiff::new(0, insertion_vec[..(overlap_length1 as usize)].to_vec()),
-                        );
-                        diffs[pointer as usize - 1] = TDiff::new(
-                            -1,
-                            deletion_vec[..(deletion_vec.len() - overlap_length1 as usize)]
-                                .to_vec(),
-                        );
-                        diffs[pointer as usize + 1] =
-                            TDiff::new(1, insertion_vec[(overlap_length1 as usize)..].to_vec());
-                        pointer += 1;
-                    }
-                } else if (overlap_length2 as f32) >= (deletion_vec.len() as f32 / 2.0)
-                    || (overlap_length2 as f32) >= (insertion_vec.len() as f32 / 2.0)
-                {
-                    // Reverse overlap found.
-                    // Insert an equality and swap and trim the surrounding edits.
-                    diffs.insert(
-                        pointer as usize,
-                        TDiff::new(0, deletion_vec[..(overlap_length2 as usize)].to_vec()),
-                    );
-                    let insertion_vec_len = insertion_vec.len();
-                    diffs[pointer as usize - 1] = TDiff::new(
-                        1,
-                        insertion_vec[..(insertion_vec_len - overlap_length2 as usize)].to_vec(),
-                    );
-                    diffs[pointer as usize + 1] =
-                        TDiff::new(-1, deletion_vec[(overlap_length2 as usize)..].to_vec());
-                    pointer += 1;
-                }
-                pointer += 1;
-            }
-            pointer += 1;
-        }
+        split_overlapping_edits(diffs);
     }
 
     /// Look for single edits surrounded on both sides by equalities
@@ -148,12 +33,12 @@ impl Dmp {
     /// Args:
     /// diffs: Vector of diff object.
     pub(crate) fn diff_cleanup_semantic_lossless_impl(&mut self, diffs: &mut Vec<TDiff>) {
-        let mut pointer: i32 = 1;
+        // diffs[..kept] is settled, diffs[next] is the edit under test, and
+        // the slots between are left over from removed equalities.
+        let (mut kept, mut next) = (1, 1);
         //Intentionally ignore the first and last element (don't need checking).
-        while pointer < diffs.len() as i32 - 1 {
-            if diffs[pointer as usize - 1].operation == 0
-                && diffs[pointer as usize + 1].operation == 0
-            {
+        while next + 1 < diffs.len() {
+            if diffs[kept - 1].operation == 0 && diffs[next + 1].operation == 0 {
                 // This is a single edit surrounded by equalities. Slide it
                 // over one concatenated buffer: the buffer is invariant under
                 // both the left shift and each right slide (the moved char is
@@ -161,15 +46,15 @@ impl Dmp {
                 // points (a, b) move, and each step costs two boundary score
                 // probes instead of rebuilding three char vectors.
                 let mut buf: Vec<char> = Vec::with_capacity(
-                    diffs[pointer as usize - 1].data.len()
-                        + diffs[pointer as usize].data.len()
-                        + diffs[pointer as usize + 1].data.len(),
+                    diffs[kept - 1].data.len()
+                        + diffs[next].data.len()
+                        + diffs[next + 1].data.len(),
                 );
-                buf.extend_from_slice(&diffs[pointer as usize - 1].data);
-                buf.extend_from_slice(&diffs[pointer as usize].data);
-                buf.extend_from_slice(&diffs[pointer as usize + 1].data);
-                let eq1_len = diffs[pointer as usize - 1].data.len();
-                let edit_len = diffs[pointer as usize].data.len();
+                buf.extend_from_slice(&diffs[kept - 1].data);
+                buf.extend_from_slice(&diffs[next].data);
+                buf.extend_from_slice(&diffs[next + 1].data);
+                let eq1_len = diffs[kept - 1].data.len();
+                let edit_len = diffs[next].data.len();
                 let mut a = eq1_len;
                 let mut b = eq1_len + edit_len;
 
@@ -194,30 +79,33 @@ impl Dmp {
                     }
                 }
 
-                if diffs[pointer as usize - 1].data != buf[..best.0] {
+                if diffs[kept - 1].data != buf[..best.0] {
                     // We have an improvement, save it back to the diff.
-                    let best_equality1 = buf[..best.0].to_vec();
-                    let best_edit = buf[best.0..best.1].to_vec();
-                    let best_equality2 = buf[best.1..].to_vec();
-                    if !best_equality1.is_empty() {
-                        diffs[pointer as usize - 1] =
-                            TDiff::new(diffs[pointer as usize - 1].operation, best_equality1);
+                    diffs[next].data = buf[best.0..best.1].to_vec();
+                    if best.0 > 0 {
+                        diffs[kept - 1].data = buf[..best.0].to_vec();
                     } else {
-                        diffs.remove(pointer as usize - 1);
-                        pointer -= 1;
+                        kept -= 1;
                     }
-                    diffs[pointer as usize] =
-                        TDiff::new(diffs[pointer as usize].operation, best_edit);
-                    if !best_equality2.is_empty() {
-                        diffs[pointer as usize + 1] =
-                            TDiff::new(diffs[pointer as usize + 1].operation, best_equality2);
+                    if best.1 < buf.len() {
+                        diffs[next + 1].data = buf[best.1..].to_vec();
                     } else {
-                        diffs.remove(pointer as usize + 1);
-                        pointer += 1;
+                        // The emptied equality goes; the piece after it is not tested.
+                        diffs.swap(kept, next);
+                        kept += 1;
+                        next += 2;
+                        if next == diffs.len() {
+                            break;
+                        }
                     }
                 }
             }
-            pointer += 1;
+            diffs.swap(kept, next);
+            kept += 1;
+            next += 1;
+        }
+        if kept < next {
+            diffs.drain(kept..next);
         }
     }
 
@@ -306,97 +194,7 @@ impl Dmp {
     /// Args:
     /// diffs: Vector of diff object.
     pub(crate) fn diff_cleanup_efficiency_impl(&mut self, diffs: &mut Vec<TDiff>) {
-        if diffs.is_empty() {
-            return;
-        }
-        let mut changes: bool = false;
-        let mut equalities: Vec<i32> = vec![]; //Stack of indices where equalities are found.
-        let mut last_equality: Vec<char> = vec![]; // Always equal to diffs[equalities[-1]][1]
-        let mut pointer: i32 = 0; // Index of current position.
-        let mut pre_ins = false; // Is there an insertion operation before the last equality.
-        let mut pre_del = false; // Is there a deletion operation before the last equality.
-        let mut post_ins = false; // Is there an insertion operation after the last equality.
-        let mut post_del = false; // Is there a deletion operation after the last equality.
-        while (pointer as usize) < diffs.len() {
-            if diffs[pointer as usize].operation == 0 {
-                if diffs[pointer as usize].data.len() < self.edit_cost as usize
-                    && (post_del || post_ins)
-                {
-                    // Candidate found.
-                    equalities.push(pointer);
-                    pre_ins = post_ins;
-                    pre_del = post_del;
-                    last_equality = diffs[pointer as usize].data.clone();
-                } else {
-                    // Not a candidate, and can never become one.
-                    equalities = vec![];
-                    last_equality = vec![];
-                }
-                post_ins = false;
-                post_del = false;
-            } else {
-                // An insertion or deletion.
-                if diffs[pointer as usize].operation == -1 {
-                    post_del = true;
-                } else {
-                    post_ins = true;
-                }
-
-                /*
-                Five types to be split:
-                <ins>A</ins><del>B</del>XY<ins>C</ins><del>D</del>
-                <ins>A</ins>X<ins>C</ins><del>D</del>
-                <ins>A</ins><del>B</del>X<ins>C</ins>
-                <ins>A</del>X<ins>C</ins><del>D</del>
-                <ins>A</ins><del>B</del>X<del>C</del>
-                */
-
-                if !last_equality.is_empty()
-                    && ((pre_ins && pre_del && post_del && post_ins)
-                        || ((last_equality.len() as i32) < self.edit_cost / 2
-                            && (pre_ins as i32
-                                + pre_del as i32
-                                + post_del as i32
-                                + post_ins as i32)
-                                == 3))
-                {
-                    // Duplicate record.
-                    diffs.insert(
-                        equalities[equalities.len() - 1] as usize,
-                        TDiff::new(-1, last_equality),
-                    );
-                    // Change second copy to insert.
-                    diffs[equalities[equalities.len() - 1] as usize + 1] = TDiff::new(
-                        1,
-                        diffs[equalities[equalities.len() - 1] as usize + 1]
-                            .data
-                            .clone(),
-                    );
-                    equalities.pop(); // Throw away the equality we just deleted.
-                    last_equality = vec![];
-                    if pre_ins && pre_del {
-                        // No changes made which could affect previous entry, keep going.
-                        post_del = true;
-                        post_ins = true;
-                        equalities = vec![];
-                    } else {
-                        if !equalities.is_empty() {
-                            equalities.pop(); // Throw away the previous equality.
-                        }
-                        if !equalities.is_empty() {
-                            pointer = equalities[equalities.len() - 1];
-                        } else {
-                            pointer = -1;
-                        }
-                        post_ins = false;
-                        post_del = false;
-                    }
-                    changes = true;
-                }
-            }
-            pointer += 1;
-        }
-        if changes {
+        if split_cheap_equalities(diffs, self.edit_cost) {
             self.diff_cleanup_merge_impl(diffs);
         }
     }
@@ -407,148 +205,12 @@ impl Dmp {
     /// Args:
     /// diffs: vectors of diff object.
     pub(crate) fn diff_cleanup_merge_impl(&mut self, diffs: &mut Vec<TDiff>) {
-        if diffs.is_empty() {
-            return;
-        }
-        // First pass: one forward fold into a fresh vector — the same
-        // accumulate / factor / flush the in-place version did, without its
-        // Vec::insert/remove churn (quadratic on many-run diffs). A dummy
-        // equality flushes the final run. Text stays as char runs the whole
-        // way, so a run of same-op pieces is concatenated by `extend`, never
-        // decoded from / re-encoded to UTF-8.
-        let mut out: Vec<TDiff> = Vec::with_capacity(diffs.len());
-        let mut text_insert: Vec<char> = vec![];
-        let mut text_delete: Vec<char> = vec![];
-        let mut count_insert = 0;
-        let mut count_delete = 0;
-        for diff in diffs
-            .drain(..)
-            .chain(std::iter::once(TDiff::new(0, vec![])))
-        {
-            if diff.operation == -1 {
-                text_delete.extend_from_slice(&diff.data);
-                count_delete += 1;
-            } else if diff.operation == 1 {
-                text_insert.extend_from_slice(&diff.data);
-                count_insert += 1;
-            } else {
-                let mut equality = diff;
-                // Upon reaching an equality, check for prior redundancies.
-                if count_delete + count_insert > 1 {
-                    let mut delete_vec = std::mem::take(&mut text_delete);
-                    let mut insert_vec = std::mem::take(&mut text_insert);
-                    if count_delete > 0 && count_insert > 0 {
-                        // Factor out any common prefixies.
-                        let mut commonlength = engine::common_prefix(&insert_vec, &delete_vec);
-                        if commonlength != 0 {
-                            let prefix = insert_vec[..commonlength].to_vec();
-                            match out.last_mut() {
-                                Some(prev) if prev.operation == 0 => {
-                                    prev.data.extend_from_slice(&prefix)
-                                }
-                                // No equality before the run to grow: mirrors
-                                // the in-place version's insert at the head.
-                                _ => out.insert(0, TDiff::new(0, prefix)),
-                            }
-                            insert_vec.drain(..commonlength);
-                            delete_vec.drain(..commonlength);
-                        }
-
-                        // Factor out any common suffixies.
-                        commonlength = engine::common_suffix(&insert_vec, &delete_vec);
-                        if commonlength != 0 {
-                            let mut suffix = insert_vec[insert_vec.len() - commonlength..].to_vec();
-                            suffix.extend_from_slice(&equality.data);
-                            equality.data = suffix;
-                            insert_vec.truncate(insert_vec.len() - commonlength);
-                            delete_vec.truncate(delete_vec.len() - commonlength);
-                        }
-                    }
-                    // Add the merged records.
-                    if !delete_vec.is_empty() {
-                        out.push(TDiff::new(-1, delete_vec));
-                    }
-                    if !insert_vec.is_empty() {
-                        out.push(TDiff::new(1, insert_vec));
-                    }
-                    out.push(equality);
-                } else if count_delete + count_insert == 1 {
-                    // A single edit passes through untouched (even an
-                    // empty-text one, as the in-place version left it).
-                    if count_delete == 1 {
-                        out.push(TDiff::new(-1, std::mem::take(&mut text_delete)));
-                    } else {
-                        out.push(TDiff::new(1, std::mem::take(&mut text_insert)));
-                    }
-                    out.push(equality);
-                } else {
-                    // No pending edits: merge adjacent equalities.
-                    match out.last_mut() {
-                        Some(prev) if prev.operation == 0 => {
-                            prev.data.extend_from_slice(&equality.data)
-                        }
-                        _ => out.push(equality),
-                    }
-                }
-                count_delete = 0;
-                text_delete = vec![];
-                text_insert = vec![];
-                count_insert = 0;
+        // A shift can line up edits to merge, and that merge can allow another shift.
+        while !diffs.is_empty() {
+            merge_edit_runs(diffs);
+            if !shift_edits_over_equalities(diffs) {
+                break;
             }
-        }
-        *diffs = out;
-        // Remove the dummy entry at the end.
-        if diffs[diffs.len() - 1].data.is_empty() {
-            diffs.pop();
-        }
-
-        /*
-        Second pass: look for single edits surrounded on both sides by equalities
-        which can be shifted sideways to eliminate an equality.
-        e.g: A<ins>BA</ins>C -> <ins>AB</ins>AC
-        */
-        let mut changes = false;
-        let mut i: i32 = 1;
-        // Intentionally ignore the first and last element (don't need checking).
-        while (i as usize) < diffs.len() - 1 {
-            if diffs[i as usize - 1].operation == 0 && diffs[i as usize + 1].operation == 0 {
-                // This is a single edit surrounded by equalities.
-                if diffs[i as usize]
-                    .data
-                    .ends_with(&diffs[i as usize - 1].data)
-                {
-                    // Shift the edit over the previous equality.
-                    if !diffs[i as usize - 1].data.is_empty() {
-                        let eq1 = diffs[i as usize - 1].data.clone();
-                        let keep = diffs[i as usize].data.len() - eq1.len();
-                        let mut shifted = eq1.clone();
-                        shifted.extend_from_slice(&diffs[i as usize].data[..keep]);
-                        diffs[i as usize].data = shifted;
-                        let mut next = eq1;
-                        next.extend_from_slice(&diffs[i as usize + 1].data);
-                        diffs[i as usize + 1].data = next;
-                    }
-                    diffs.remove(i as usize - 1);
-                    changes = true;
-                } else if diffs[i as usize]
-                    .data
-                    .starts_with(&diffs[i as usize + 1].data)
-                {
-                    // Shift the edit over the next equality.
-                    let eq2 = diffs[i as usize + 1].data.clone();
-                    diffs[i as usize - 1].data.extend_from_slice(&eq2);
-                    let mut edit = diffs[i as usize].data[eq2.len()..].to_vec();
-                    edit.extend_from_slice(&eq2);
-                    diffs[i as usize].data = edit;
-                    diffs.remove(i as usize + 1);
-                    changes = true;
-                }
-            }
-            i += 1;
-        }
-        // If shifts were made, the diff needs reordering and another shift sweep.
-        if changes {
-            self.diff_cleanup_merge_impl(diffs);
         }
     }
 
@@ -684,6 +346,338 @@ impl Dmp {
     }
 }
 
+/// Turn a deletion followed by an insertion that share an end into two edits
+/// around the shared text.
+/// e.g: <del>abcxxx</del><ins>xxxdef</ins> -> <del>abc</del>xxx<ins>def</ins>
+/// e.g: <del>xxxabc</del><ins>defxxx</ins> -> <ins>def</ins>xxx<del>abc</del>
+/// Only extract an overlap if it is as big as the edit ahead or behind it.
+fn split_overlapping_edits(diffs: &mut Vec<TDiff>) {
+    let mut out: Vec<TDiff> = Vec::with_capacity(diffs.len());
+    let mut pieces = std::mem::take(diffs).into_iter().peekable();
+    while let Some(mut deletion) = pieces.next() {
+        let after_deletion = deletion.operation == -1;
+        let Some(mut insertion) = pieces.next_if(|next| after_deletion && next.operation == 1)
+        else {
+            out.push(deletion);
+            continue;
+        };
+        let (deletion_len, insertion_len) = (deletion.data.len(), insertion.data.len());
+        let overlap1 = engine::common_overlap(&deletion.data, &insertion.data);
+        let overlap2 = engine::common_overlap(&insertion.data, &deletion.data);
+        let big_enough = |overlap: usize| {
+            (overlap as f32) >= (deletion_len as f32 / 2.0)
+                || (overlap as f32) >= (insertion_len as f32 / 2.0)
+        };
+        if overlap1 >= overlap2 && big_enough(overlap1) {
+            // Overlap found.  Insert an equality and trim the surrounding edits.
+            let rest = insertion.data.split_off(overlap1);
+            deletion.data.truncate(deletion_len - overlap1);
+            out.push(deletion);
+            out.push(TDiff::new(0, insertion.data));
+            out.push(TDiff::new(1, rest));
+        } else if overlap1 < overlap2 && big_enough(overlap2) {
+            // Reverse overlap found.
+            // Insert an equality and swap and trim the surrounding edits.
+            let rest = deletion.data.split_off(overlap2);
+            insertion.data.truncate(insertion_len - overlap2);
+            out.push(insertion);
+            out.push(TDiff::new(0, deletion.data));
+            out.push(TDiff::new(-1, rest));
+        } else {
+            out.push(deletion);
+            out.push(insertion);
+        }
+    }
+    *diffs = out;
+}
+
+/// A candidate equality still standing, with how many edit kinds the run before it has.
+struct Candidate {
+    index: usize,
+    len: usize,
+    pre_kinds: i32,
+}
+
+/// Turn every short equality whose neighbouring edits make it cheaper to
+/// edit over than to keep into a delete plus an insert. Returns whether any
+/// was turned.
+///
+/// Turning an equality only adds edit kinds to the runs beside it, so only
+/// the candidate before it needs another look.
+fn split_cheap_equalities(diffs: &mut Vec<TDiff>, edit_cost: i32) -> bool {
+    let mut candidates: Vec<Candidate> = vec![];
+    let mut turned: Vec<usize> = vec![];
+    // Edit kinds since the last standing equality.
+    let (mut post_ins, mut post_del) = (false, false);
+    for (index, diff) in diffs.iter().enumerate() {
+        let len = diff.data.len();
+        if diff.operation == 0 {
+            if len < edit_cost as usize && (post_del || post_ins) {
+                candidates.push(Candidate {
+                    index,
+                    len,
+                    pre_kinds: post_ins as i32 + post_del as i32,
+                });
+            } else {
+                // Not a candidate, and can never become one.
+                candidates.clear();
+            }
+            (post_ins, post_del) = (false, false);
+            continue;
+        }
+        if diff.operation == -1 {
+            post_del = true;
+        } else {
+            post_ins = true;
+        }
+        /*
+        Five types to be split:
+        <ins>A</ins><del>B</del>XY<ins>C</ins><del>D</del>
+        <ins>A</ins>X<ins>C</ins><del>D</del>
+        <ins>A</ins><del>B</del>X<ins>C</ins>
+        <ins>A</del>X<ins>C</ins><del>D</del>
+        <ins>A</ins><del>B</del>X<del>C</del>
+        */
+        while let Some(top) = candidates.last() {
+            let kinds = top.pre_kinds + post_ins as i32 + post_del as i32;
+            if top.len == 0 || !(kinds == 4 || ((top.len as i32) < edit_cost / 2 && kinds == 3)) {
+                break;
+            }
+            turned.push(top.index);
+            candidates.pop();
+            (post_ins, post_del) = (true, true);
+        }
+    }
+    if turned.is_empty() {
+        return false;
+    }
+    turn_into_edits(diffs, turned);
+    true
+}
+
+/// Replace each of the listed equalities with a delete plus an insert of its text.
+fn turn_into_edits(diffs: &mut Vec<TDiff>, mut equalities: Vec<usize>) {
+    equalities.sort_unstable();
+    let mut out: Vec<TDiff> = Vec::with_capacity(diffs.len() + equalities.len());
+    let mut next = equalities.into_iter().peekable();
+    for (index, diff) in diffs.drain(..).enumerate() {
+        if next.next_if_eq(&index).is_some() {
+            out.push(TDiff::new(-1, diff.data.clone()));
+            out.push(TDiff::new(1, diff.data));
+        } else {
+            out.push(diff);
+        }
+    }
+    *diffs = out;
+}
+
+/// Join each run of edits between two equalities into one delete and one
+/// insert, move their common prefix and suffix into the equalities around
+/// them, and join adjacent equalities.
+fn merge_edit_runs(diffs: &mut Vec<TDiff>) {
+    // One forward fold into a fresh vector — the same accumulate / factor /
+    // flush the in-place version did, without its Vec::insert/remove churn
+    // (quadratic on many-run diffs). A dummy equality flushes the final run.
+    // Text stays as char runs the whole way, so a run of same-op pieces is
+    // concatenated by `extend`, never decoded from / re-encoded to UTF-8.
+    let mut out: Vec<TDiff> = Vec::with_capacity(diffs.len());
+    let mut text_insert: Vec<char> = vec![];
+    let mut text_delete: Vec<char> = vec![];
+    let mut count_insert = 0;
+    let mut count_delete = 0;
+    for diff in diffs
+        .drain(..)
+        .chain(std::iter::once(TDiff::new(0, vec![])))
+    {
+        if diff.operation == -1 {
+            text_delete.extend_from_slice(&diff.data);
+            count_delete += 1;
+        } else if diff.operation == 1 {
+            text_insert.extend_from_slice(&diff.data);
+            count_insert += 1;
+        } else {
+            let mut equality = diff;
+            // Upon reaching an equality, check for prior redundancies.
+            if count_delete + count_insert > 1 {
+                let mut delete_vec = std::mem::take(&mut text_delete);
+                let mut insert_vec = std::mem::take(&mut text_insert);
+                if count_delete > 0 && count_insert > 0 {
+                    // Factor out any common prefixies.
+                    let mut commonlength = engine::common_prefix(&insert_vec, &delete_vec);
+                    if commonlength != 0 {
+                        let prefix = insert_vec[..commonlength].to_vec();
+                        match out.last_mut() {
+                            Some(prev) if prev.operation == 0 => {
+                                prev.data.extend_from_slice(&prefix)
+                            }
+                            // No equality before the run to grow: mirrors
+                            // the in-place version's insert at the head.
+                            _ => out.insert(0, TDiff::new(0, prefix)),
+                        }
+                        insert_vec.drain(..commonlength);
+                        delete_vec.drain(..commonlength);
+                    }
+
+                    // Factor out any common suffixies.
+                    commonlength = engine::common_suffix(&insert_vec, &delete_vec);
+                    if commonlength != 0 {
+                        let mut suffix = insert_vec[insert_vec.len() - commonlength..].to_vec();
+                        suffix.extend_from_slice(&equality.data);
+                        equality.data = suffix;
+                        insert_vec.truncate(insert_vec.len() - commonlength);
+                        delete_vec.truncate(delete_vec.len() - commonlength);
+                    }
+                }
+                // Add the merged records.
+                if !delete_vec.is_empty() {
+                    out.push(TDiff::new(-1, delete_vec));
+                }
+                if !insert_vec.is_empty() {
+                    out.push(TDiff::new(1, insert_vec));
+                }
+                out.push(equality);
+            } else if count_delete + count_insert == 1 {
+                // A single edit passes through untouched (even an
+                // empty-text one, as the in-place version left it).
+                if count_delete == 1 {
+                    out.push(TDiff::new(-1, std::mem::take(&mut text_delete)));
+                } else {
+                    out.push(TDiff::new(1, std::mem::take(&mut text_insert)));
+                }
+                out.push(equality);
+            } else {
+                // No pending edits: merge adjacent equalities.
+                match out.last_mut() {
+                    Some(prev) if prev.operation == 0 => {
+                        prev.data.extend_from_slice(&equality.data)
+                    }
+                    _ => out.push(equality),
+                }
+            }
+            count_delete = 0;
+            text_delete = vec![];
+            text_insert = vec![];
+            count_insert = 0;
+        }
+    }
+    *diffs = out;
+    // Remove the dummy entry at the end.
+    if diffs[diffs.len() - 1].data.is_empty() {
+        diffs.pop();
+    }
+}
+
+/// Look for single edits surrounded on both sides by equalities which can be
+/// shifted sideways to eliminate an equality, e.g. A<ins>BA</ins>C ->
+/// <ins>AB</ins>AC. Returns whether any edit moved.
+fn shift_edits_over_equalities(diffs: &mut Vec<TDiff>) -> bool {
+    let mut changes = false;
+    // diffs[..kept] is settled, diffs[next] is the edit under test, and the
+    // slots between are left over from removed equalities.
+    let (mut kept, mut next) = (1, 1);
+    while next + 1 < diffs.len() {
+        if diffs[kept - 1].operation == 0 && diffs[next + 1].operation == 0 {
+            if diffs[next].data.ends_with(&diffs[kept - 1].data) {
+                // Shift the edit over the previous equality.
+                let mut equality = std::mem::take(&mut diffs[kept - 1].data);
+                diffs[next].data.rotate_right(equality.len());
+                equality.extend_from_slice(&diffs[next + 1].data);
+                diffs[next + 1].data = equality;
+                diffs.swap(kept - 1, next);
+                diffs.swap(kept, next + 1);
+                kept += 1;
+                next += 2;
+                changes = true;
+                continue;
+            }
+            if diffs[next].data.starts_with(&diffs[next + 1].data) {
+                // Shift the edit over the next equality.
+                let equality = std::mem::take(&mut diffs[next + 1].data);
+                diffs[next].data.rotate_left(equality.len());
+                diffs[kept - 1].data.extend_from_slice(&equality);
+                diffs.swap(kept, next);
+                kept += 1;
+                next += 2;
+                changes = true;
+                continue;
+            }
+        }
+        diffs.swap(kept, next);
+        kept += 1;
+        next += 1;
+    }
+    if changes {
+        diffs.drain(kept..next);
+    }
+    changes
+}
+
+/// An equality still standing, with the edit lengths between it and the next one.
+struct Standing {
+    index: usize,
+    len: i32,
+    insertions: i32,
+    deletions: i32,
+}
+
+/// Turn every equality no longer than the edits on both sides of it into a
+/// delete plus an insert. Returns whether any was turned.
+///
+/// An equality's left side is fixed while it stands and its right side only
+/// grows, so it is rechecked only when that side grows.
+fn eliminate_small_equalities(diffs: &mut Vec<TDiff>) -> bool {
+    let mut standing: Vec<Standing> = vec![];
+    // Edit lengths before the first standing equality.
+    let mut head = (0i32, 0i32);
+    let mut eliminated: Vec<usize> = vec![];
+    for (index, diff) in diffs.iter().enumerate() {
+        let len = diff.data.len() as i32;
+        if diff.operation == 0 {
+            standing.push(Standing {
+                index,
+                len,
+                insertions: 0,
+                deletions: 0,
+            });
+            continue;
+        }
+        let (insertions, deletions) = match standing.last_mut() {
+            Some(top) => (&mut top.insertions, &mut top.deletions),
+            None => (&mut head.0, &mut head.1),
+        };
+        if diff.operation == 1 {
+            *insertions += len;
+        } else {
+            *deletions += len;
+        }
+        while let Some(top) = standing.pop() {
+            let before = match standing.last() {
+                Some(previous) => (previous.insertions, previous.deletions),
+                None => head,
+            };
+            if top.len == 0
+                || top.len > max(before.0, before.1)
+                || top.len > max(top.insertions, top.deletions)
+            {
+                standing.push(top);
+                break;
+            }
+            eliminated.push(top.index);
+            let (insertions, deletions) = match standing.last_mut() {
+                Some(previous) => (&mut previous.insertions, &mut previous.deletions),
+                None => (&mut head.0, &mut head.1),
+            };
+            *insertions += top.insertions + top.len;
+            *deletions += top.deletions + top.len;
+        }
+    }
+    if eliminated.is_empty() {
+        return false;
+    }
+    turn_into_edits(diffs, eliminated);
+    true
+}
+
 /// Run a token-space cleanup pass on public `String`-carrying diffs: decode
 /// each piece to a char run once, run the pass, re-encode once. External
 /// callers pay one round-trip instead of the per-operation decodes the passes
@@ -712,3 +706,6 @@ fn dispatch(dmp: &mut Dmp, diffs: &mut Vec<Diff>, pass: fn(&mut Dmp, &mut Vec<TD
     pass(dmp, &mut tokens);
     *diffs = tokens.into_iter().map(TDiff::into_diff).collect();
 }
+
+#[cfg(test)]
+mod tests;

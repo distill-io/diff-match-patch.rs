@@ -31,6 +31,8 @@ Each item is one commit.
 21. The internal diff is carried as token runs (`TDiff`) through recursion and all four cleanup passes; UTF-8 is encoded exactly once, at `materialize`.
 22. The containment check uses a budgeted skip+verify (no KMP table), falling back to KMP only when a periodic needle keeps matching deeply.
 23. A lazy incremental KMP table (`Kmp::fail`) builds only up to the highest automaton state reached, shrinking `common_overlap`'s single-line 16 KB table builds to almost nothing.
+24. Semantic cleanup eliminates small equalities in one pass over a stack of the equalities still standing, instead of rescanning from two equalities back after every elimination — that rescan was quadratic on diffs with many small equalities.
+25. Word packing borrows its map keys from the input and finds or inserts each word with one hashed lookup, pushing the placeholder char straight into the output; the stretches both texts share at their ends are packed once and copied to the second text.
 
 **Tried and dropped:** restructuring the bisect snake walk to call the block
 compares (regressed probe-bound cases); slice-key line interning (4× hashing on
