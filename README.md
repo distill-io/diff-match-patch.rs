@@ -86,7 +86,8 @@ dmp.diff_cleanup_semantic(&mut diffs);
 
 `diff_main` runs Myers' O(ND) search. The work grows with the square of the
 number of differences: about D²/2 steps for D inserted plus deleted tokens, at
-2 to 3 ns per step on the benchmark machine below. Two settings bound it:
+2 to 3 ns per step on the benchmark machine below. Two settings bound the
+search:
 
 | Setting | Default | Counts | Same output on every machine |
 |---|---|---|---|
@@ -98,22 +99,24 @@ dmp.diff_timeout = None; // no clock
 dmp.diff_step_budget = Some(400_000_000); // about one second of search
 ```
 
-`None` turns a limit off. With both set, the search stops at whichever runs
-out first. The result is always a valid diff of the two texts, just not the
-shortest one:
+`None` turns a limit off. The budget counts search steps only: packing lines
+or words and the cleanup passes are not counted. With both set, the search
+stops at whichever runs out first; a budget does not lift the timeout. The
+result is always a valid diff of the two texts, just not the shortest one:
 
 - **Timeout.** The region still being searched comes back as one delete and
   one insert.
 - **Step budget.** The search runs on until it has walked a matched run of at
   least 20 tokens or looked 1,024 edits ahead, splits there, and diffs the
   parts with a second allowance the size of the budget. What is still unsolved
-  after that comes back as delete and insert. Total work stays within about
+  after that comes back as delete and insert. Search work stays within about
   twice the budget. A larger budget usually gives a shorter diff, but not
   always.
 
-With a timeout set, `diff_main` also tries the reference's half-match
-shortcut, which can return a longer diff. `diff_timeout = None` turns the
-shortcut off, as it does in the reference.
+With a timeout set and no step budget, `diff_main` also tries the reference's
+half-match shortcut, which can return a longer diff. Its work is not counted
+in steps, so setting `diff_step_budget` turns the shortcut off. So does
+`diff_timeout = None`, as in the reference.
 
 ### Word and line diffs
 
