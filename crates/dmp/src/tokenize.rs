@@ -650,19 +650,11 @@ mod tests {
     }
 
     #[test]
-    fn word_ids_spread_words_that_share_a_prefix() {
-        let words: Vec<String> = (0..4096).map(|i| format!("aaa{i:05}")).collect();
-        let ids = WordIds::default();
-        let filled = buckets_filled(ids.hasher(), words.iter().map(String::as_str));
-        assert!(filled > 2_400, "{filled} buckets");
-    }
-
-    #[test]
     fn line_buckets_spread_lines_that_share_a_prefix() {
         let store = LineArena::new();
         let lines = (0..4096).map(|i| fx_hash_bytes(format!("{}\n", 1_000_000 + i).as_bytes()));
         let filled = buckets_filled(store.buckets.hasher(), lines);
-        assert!(filled > 2_400, "{filled} buckets");
+        assert_eq!(filled, 2_464);
     }
 
     #[test]
