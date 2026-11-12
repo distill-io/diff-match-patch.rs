@@ -213,9 +213,8 @@ pub(crate) fn contains<T: Eq>(hay: &[T], needle: &[T]) -> Option<usize> {
     None
 }
 
-/// Last index at or before `until` where `needle` starts in `hay` (KMP from
-/// the front, keeping the final hit), or None. A match may end at `until + 1`,
-/// i.e. its last token at index `until`.
+/// Last index at or before `until` where `needle` starts in `hay`, or None.
+/// A match may end at `until + 1`, i.e. its last token at index `until`.
 pub(crate) fn rfind_sub<T: Eq>(hay: &[T], needle: &[T], until: usize) -> Option<usize> {
     if needle.is_empty() {
         return Some(until);
@@ -223,12 +222,31 @@ pub(crate) fn rfind_sub<T: Eq>(hay: &[T], needle: &[T], until: usize) -> Option<
     if hay.is_empty() {
         return None;
     }
+    let end = until.min(hay.len() - 1) + 1;
     let mut kmp: Option<Kmp<T>> = None;
+    // Starts are tried in blocks from the end, each twice as long as the
+    // one before, so a hit near the end costs its distance from the end.
+    let mut hi = end.checked_sub(needle.len())? + 1;
+    let mut block = needle.len();
+    while hi > 0 {
+        let lo = hi.saturating_sub(block);
+        if let Some(at) = last_in(&hay[lo..hi + needle.len() - 1], needle, &mut kmp) {
+            return Some(lo + at);
+        }
+        hi = lo;
+        block *= 2;
+    }
+    None
+}
+
+/// Last index where `needle` starts in `hay` (KMP from the front, keeping the
+/// final hit), or None.
+fn last_in<'a, T: Eq>(hay: &[T], needle: &'a [T], kmp: &mut Option<Kmp<'a, T>>) -> Option<usize> {
     let mut i = 0;
     let mut len = 0;
     let mut last: Option<usize> = None;
-    while i <= until {
-        if i < hay.len() && hay[i] == needle[len] {
+    while i < hay.len() {
+        if hay[i] == needle[len] {
             len += 1;
             i += 1;
             if len == needle.len() {
@@ -236,9 +254,7 @@ pub(crate) fn rfind_sub<T: Eq>(hay: &[T], needle: &[T], until: usize) -> Option<
                 len = kmp.get_or_insert_with(|| Kmp::new(needle)).fail(len);
             }
         } else if len == 0 {
-            // As in find_sub: jump to the next possible start. No further
-            // occurrence also covers the historical i-past-the-text spin
-            // (until may exceed the text; nothing could match there).
+            // As in find_sub: jump to the next possible start.
             match skip_to(hay, i + 1, &needle[0]) {
                 Some(j) => i = j,
                 None => return last,
@@ -695,6 +711,77 @@ mod tests {
         assert_eq!(rfind_sub(b"ab", b"b", 9), Some(1));
         assert_eq!(rfind_sub(b"abc", b"", 2), Some(2));
         assert_eq!(rfind_sub(b"", b"a", 0), None);
+    }
+
+    /// The search the backward blocks replaced: one scan from the front of
+    /// the text that kept the final hit.
+    fn rfind_sub_from_front<T: Eq>(hay: &[T], needle: &[T], until: usize) -> Option<usize> {
+        if needle.is_empty() {
+            return Some(until);
+        }
+        if hay.is_empty() {
+            return None;
+        }
+        let mut kmp: Option<Kmp<T>> = None;
+        let mut i = 0;
+        let mut len = 0;
+        let mut last: Option<usize> = None;
+        while i <= until {
+            if i < hay.len() && hay[i] == needle[len] {
+                len += 1;
+                i += 1;
+                if len == needle.len() {
+                    last = Some(i - len);
+                    len = kmp.get_or_insert_with(|| Kmp::new(needle)).fail(len);
+                }
+            } else if len == 0 {
+                match skip_to(hay, i + 1, &needle[0]) {
+                    Some(j) => i = j,
+                    None => return last,
+                }
+            } else {
+                len = kmp.get_or_insert_with(|| Kmp::new(needle)).fail(len);
+            }
+        }
+        last
+    }
+
+    #[test]
+    fn rfind_sub_matches_scan_from_front() {
+        // Every text of up to 11 bytes over two letters.
+        let texts = |len: usize| {
+            (0..1usize << len).map(move |bits| {
+                (0..len)
+                    .map(|i| if bits >> i & 1 == 0 { b'a' } else { b'b' })
+                    .collect::<Vec<u8>>()
+            })
+        };
+        // A hit or a miss is "far" when the search had to leave the first
+        // block of starts, which is as long as the needle.
+        let (mut near, mut far, mut missed_near, mut missed_far) = (0, 0, 0, 0);
+        for hay in (0..=11).flat_map(texts) {
+            for needle in (1..=4).flat_map(texts) {
+                for until in 0..=hay.len() + 1 {
+                    let expected = rfind_sub_from_front(&hay, &needle, until);
+                    assert_eq!(
+                        rfind_sub(&hay, &needle, until),
+                        expected,
+                        "{hay:?} {needle:?} {until}"
+                    );
+                    let end = (until + 1).min(hay.len());
+                    match expected {
+                        Some(at) if at + 2 * needle.len() <= end => far += 1,
+                        Some(_) => near += 1,
+                        None if 2 * needle.len() <= end => missed_far += 1,
+                        None => missed_near += 1,
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            (near, far, missed_near, missed_far),
+            (339182, 199798, 606746, 328834)
+        );
     }
 
     #[test]
