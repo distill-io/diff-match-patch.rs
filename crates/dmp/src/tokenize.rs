@@ -136,7 +136,7 @@ impl Dmp {
 /// their placeholders from text1 instead of looking each word up again.
 fn words_tochars(text1: &str, text2: &str) -> (String, String, Vec<String>) {
     let mut words: Vec<String> = vec![String::new()];
-    let mut ids: FxMap<&str, u32> = FxMap::default();
+    let mut ids = WordIds::default();
     let head = shared_head(text1, text2);
     let tail = shared_tail(&text1[head..], &text2[head..]);
     let (middle1, middle2) = (text1.len() - tail, text2.len() - tail);
@@ -178,12 +178,15 @@ fn shared_tail(text1: &str, text2: &str) -> usize {
     }
 }
 
+/// Std's keyed hasher: page text must not be able to pick colliding words.
+type WordIds<'a> = HashMap<&'a str, u32>;
+
 /// Append one placeholder char per token of `text`, numbering new words.
 fn pack_words<'a>(
     text: &'a str,
     chars: &mut String,
     words: &mut Vec<String>,
-    ids: &mut FxMap<&'a str, u32>,
+    ids: &mut WordIds<'a>,
 ) {
     for_each_word(text, |word| {
         let slot = *ids.entry(word).or_insert_with(|| {
@@ -241,7 +244,8 @@ impl std::hash::Hasher for FxHasher {
     }
 
     fn finish(&self) -> u64 {
-        self.0
+        // The multiply mixes upward only; the map indexes by the low bits.
+        self.0.rotate_left(26)
     }
 }
 
@@ -636,6 +640,30 @@ impl GraphemePacker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::hash::{BuildHasher, Hash};
+
+    /// How many of 4,096 buckets the keys hash into; uniform hashing fills about 2,589.
+    fn buckets_filled<S: BuildHasher, K: Hash>(hasher: &S, keys: impl Iterator<Item = K>) -> usize {
+        let filled: std::collections::HashSet<u64> =
+            keys.map(|key| hasher.hash_one(key) & 0xfff).collect();
+        filled.len()
+    }
+
+    #[test]
+    fn word_ids_spread_words_that_share_a_prefix() {
+        let words: Vec<String> = (0..4096).map(|i| format!("aaa{i:05}")).collect();
+        let ids = WordIds::default();
+        let filled = buckets_filled(ids.hasher(), words.iter().map(String::as_str));
+        assert!(filled > 2_400, "{filled} buckets");
+    }
+
+    #[test]
+    fn line_buckets_spread_lines_that_share_a_prefix() {
+        let store = LineArena::new();
+        let lines = (0..4096).map(|i| fx_hash_bytes(format!("{}\n", 1_000_000 + i).as_bytes()));
+        let filled = buckets_filled(store.buckets.hasher(), lines);
+        assert!(filled > 2_400, "{filled} buckets");
+    }
 
     #[test]
     fn arena_roundtrip_survives_the_surrogate_gap() {
