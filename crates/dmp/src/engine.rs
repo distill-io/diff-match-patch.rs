@@ -512,17 +512,6 @@ fn snake_rev<T: Eq>(old: &[T], new: &[T], mut x: usize, mut y: usize) -> (usize,
     (x, y)
 }
 
-/// DMP diff_bisect middle-snake search. Returns the split point (x, y) where
-/// the forward and reverse d-paths overlap, or None when the inputs share no
-/// overlap (or the deadline expired) and the caller should emit delete+insert.
-///
-/// The classic ports guard the snake walks against negative x/y (Python's
-/// arr[-1] wraps from the end), but the Myers invariants make that
-/// unreachable: every stored v entry is a prior walk endpoint with x >= 0
-/// and y = x - k >= 0, and the seed is 0. The walks therefore index usize
-/// slices directly (snake_fwd/snake_rev), with the invariant pinned by
-/// debug_asserts; the old guarded form spent ~18% of a bisect-bound profile
-/// in bounds-check machinery. v entries stay i32 to halve the working set.
 /// What stops one diff early: a wall-clock deadline, a step budget, or both.
 pub(crate) struct Limit {
     pub(crate) deadline: Option<Instant>,
@@ -544,6 +533,17 @@ impl Limit {
     }
 }
 
+/// DMP diff_bisect middle-snake search. Returns the split point (x, y) where
+/// the forward and reverse d-paths overlap, or None when the inputs share no
+/// overlap (or the limit ran out) and the caller should emit delete+insert.
+///
+/// The classic ports guard the snake walks against negative x/y (Python's
+/// arr[-1] wraps from the end), but the Myers invariants make that
+/// unreachable: every stored v entry is a prior walk endpoint with x >= 0
+/// and y = x - k >= 0, and the seed is 0. The walks therefore index usize
+/// slices directly (snake_fwd/snake_rev), with the invariant pinned by
+/// debug_asserts; the old guarded form spent ~18% of a bisect-bound profile
+/// in bounds-check machinery. v entries stay i32 to halve the working set.
 pub(crate) fn bisect<T: Eq>(
     old: &[T],
     new: &[T],
