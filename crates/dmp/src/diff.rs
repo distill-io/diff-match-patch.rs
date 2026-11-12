@@ -63,12 +63,12 @@ impl Dmp {
     }
 
     /// The deadline equivalent of `diff_timeout` starting now; bisect gives up
-    /// once it passes. `Some(0.0)` therefore means "zero budget", while `None`
+    /// once it passes. `Some(0.0)` therefore means "zero time", while `None`
     /// disables the deadline entirely (and with it the half-match speedup).
     ///
     /// Degenerate values mirror the historical float comparisons instead of
     /// panicking in Duration/Instant math: a negative timeout behaves as zero
-    /// budget, NaN as no deadline, and huge values are capped (~30 years).
+    /// time, NaN as no deadline, and huge values are capped (~30 years).
     fn deadline_from_now(&self) -> Option<Instant> {
         let secs = self.diff_timeout?;
         if secs.is_nan() {
