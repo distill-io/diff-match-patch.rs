@@ -112,6 +112,10 @@ result is always a valid diff of the two texts, just not the shortest one:
   after that comes back as delete and insert. Search work stays within about
   twice the budget. A larger budget usually gives a shorter diff, but not
   always.
+- **Small budgets.** If the whole allowance is spent before the search finds
+  such a run or reaches 1,024 edits (roughly budgets under half a million
+  steps on texts with little in common), the result is one delete and one
+  insert, as with a budget of 0.
 
 With a timeout set and no step budget, `diff_main` also tries the reference's
 half-match shortcut, which can return a longer diff. Its work is not counted
@@ -228,7 +232,7 @@ Configuration is plain fields on `Dmp`:
 | Field | Default | Meaning |
 |---|---|---|
 | `diff_timeout` | `Some(1.0)` | Seconds before the diff search gives up. `None`: no limit. |
-| `diff_step_budget` | `None` | Search steps before the diff search gives up. `None`: no limit. |
+| `diff_step_budget` | `None` | Search steps for the exact diff. Once spent, the search keeps what it matched and may take as many again to split the rest. `None`: no limit. |
 | `edit_cost` | `0` | Length below which `diff_cleanup_efficiency` may remove an equality. |
 | `match_threshold` | `0.5` | Highest score `match_main` accepts (0.0 exact, 1.0 very loose). |
 | `match_distance` | `1000` | Distance from `loc`, in chars, that adds 1.0 to a match's score. |
