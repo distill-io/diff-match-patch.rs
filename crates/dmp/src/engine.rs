@@ -515,27 +515,98 @@ fn snake_rev<T: Eq>(old: &[T], new: &[T], mut x: usize, mut y: usize) -> (usize,
 /// What stops one diff early: a wall-clock deadline, a step budget, or both.
 pub(crate) struct Limit {
     pub(crate) deadline: Option<Instant>,
-    /// Steps left for every search of this diff together.
-    pub(crate) steps: Option<Cell<u64>>,
+    pub(crate) budget: Option<Budget>,
+}
+
+/// Steps shared by every search of one diff.
+pub(crate) struct Budget {
+    pub(crate) used: Cell<u64>,
+    /// Searches run exactly until this much is used.
+    pub(crate) exact: u64,
+    /// Searches past `exact` may run on to here to find matches to keep.
+    pub(crate) total: u64,
+}
+
+impl Budget {
+    pub(crate) fn new(exact: u64) -> Self {
+        Budget {
+            used: Cell::new(0),
+            exact,
+            total: exact.saturating_mul(2),
+        }
+    }
+
+    pub(crate) fn past_exact(&self) -> bool {
+        self.used.get() >= self.exact
+    }
+
+    fn spent(&self) -> bool {
+        self.used.get() >= self.total
+    }
+
+    fn room(&self) -> u64 {
+        self.total.saturating_sub(self.used.get())
+    }
 }
 
 impl Limit {
-    fn is_spent(&self) -> bool {
+    fn deadline_passed(&self) -> bool {
         self.deadline
             .is_some_and(|deadline| Instant::now() >= deadline)
-            || self.steps.as_ref().is_some_and(|steps| steps.get() == 0)
     }
 
-    fn charge(&self, cost: u64) {
-        if let Some(steps) = &self.steps {
-            steps.set(steps.get().saturating_sub(cost));
+    fn charge(&self, cost: usize) {
+        if let Some(budget) = &self.budget {
+            budget
+                .used
+                .set(budget.used.get().saturating_add(cost as u64));
         }
     }
 }
 
+/// Where bisect splits a box.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Split {
+    /// The middle snake: diff both halves exactly.
+    Middle(usize, usize),
+    /// Out of budget: diff the parts before `head`, between, and after `tail`
+    /// on their own, which keeps the matches the search reached.
+    Ends {
+        head: (usize, usize),
+        tail: (usize, usize),
+    },
+    /// No overlap, or out of time or budget with nothing worth keeping.
+    None,
+}
+
+/// Shortest matched run worth keeping when the budget runs out.
+const ANCHOR: usize = 20;
+/// Edits an over-budget search may look ahead before it splits anyway.
+const MAX_OVER_BUDGET_EDITS: i32 = 1024;
+
+/// The in-box point of a d-path, as (x, y), that got furthest into both texts.
+fn furthest(v: &[i32], v_offset: i32, d: i32, n: usize, m: usize) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize)> = None;
+    for k in -d..=d {
+        let Some(&x) = v.get((v_offset + k) as usize) else {
+            continue;
+        };
+        let y = x - k;
+        if x < 0 || y < 0 || x as usize > n || y as usize > m {
+            continue;
+        }
+        let point = (x as usize, y as usize);
+        if best.map_or(true, |(bx, by)| point.0 + point.1 > bx + by) {
+            best = Some(point);
+        }
+    }
+    best
+}
+
 /// DMP diff_bisect middle-snake search. Returns the split point (x, y) where
 /// the forward and reverse d-paths overlap, or None when the inputs share no
-/// overlap (or the limit ran out) and the caller should emit delete+insert.
+/// overlap (or the deadline passed) and the caller should emit delete+insert.
+/// Out of budget it returns the ends of the matched runs it found instead.
 ///
 /// The classic ports guard the snake walks against negative x/y (Python's
 /// arr[-1] wraps from the end), but the Myers invariants make that
@@ -544,14 +615,9 @@ impl Limit {
 /// slices directly (snake_fwd/snake_rev), with the invariant pinned by
 /// debug_asserts; the old guarded form spent ~18% of a bisect-bound profile
 /// in bounds-check machinery. v entries stay i32 to halve the working set.
-pub(crate) fn bisect<T: Eq>(
-    old: &[T],
-    new: &[T],
-    limit: &Limit,
-    scratch: &mut Vec<i32>,
-) -> Option<(usize, usize)> {
+pub(crate) fn bisect<T: Eq>(old: &[T], new: &[T], limit: &Limit, scratch: &mut Vec<i32>) -> Split {
     // Counting steps slows the walk, so only a diff with a budget pays for it.
-    if limit.steps.is_some() {
+    if limit.budget.is_some() {
         bisect_walk::<T, true>(old, new, limit, scratch)
     } else {
         bisect_walk::<T, false>(old, new, limit, scratch)
@@ -563,12 +629,22 @@ fn bisect_walk<T: Eq, const COUNTING: bool>(
     new: &[T],
     limit: &Limit,
     scratch: &mut Vec<i32>,
-) -> Option<(usize, usize)> {
+) -> Split {
     let text1_length = old.len() as i32;
     let text2_length = new.len() as i32;
     let max_d: i32 = (text1_length + text2_length + 1) / 2;
-    let v_offset: i32 = max_d;
-    let v_length: i32 = 2 * max_d;
+    let mut span = max_d;
+    if let (true, Some(budget)) = (COUNTING, &limit.budget) {
+        if budget.spent() {
+            return Split::None;
+        }
+        // Past the exact budget a search never gets beyond the edit cap.
+        if budget.past_exact() {
+            span = max_d.min(MAX_OVER_BUDGET_EDITS + 1);
+        }
+    }
+    let v_offset: i32 = span;
+    let v_length: i32 = 2 * span;
     // The caller-provided scratch backs both k-line arrays: recursion and
     // rediff loops reuse one allocation (children are never larger, so after
     // the first call this is a pure memset).
@@ -587,9 +663,22 @@ fn bisect_walk<T: Eq, const COUNTING: bool>(
     let mut k1end: i32 = 0;
     let mut k2start: i32 = 0;
     let mut k2end: i32 = 0;
-    for d in 0..max_d {
-        if limit.is_spent() {
-            break;
+    // The furthest-reaching ends of long matched runs, front and back.
+    let mut fwd_anchor: Option<(usize, usize)> = None;
+    let mut rev_anchor: Option<(usize, usize)> = None;
+    let mut stopped_at: Option<i32> = None;
+    'search: for d in 0..max_d {
+        if limit.deadline_passed() {
+            return Split::None;
+        }
+        let mut room = u64::MAX;
+        if let (true, Some(budget)) = (COUNTING, &limit.budget) {
+            let anchored = fwd_anchor.is_some() || rev_anchor.is_some();
+            if budget.spent() || (budget.past_exact() && (anchored || d >= MAX_OVER_BUDGET_EDITS)) {
+                stopped_at = Some(d);
+                break 'search;
+            }
+            room = budget.room();
         }
         // One step per diagonal visited and per token walked along it.
         let mut cost: usize = 0;
@@ -621,7 +710,11 @@ fn bisect_walk<T: Eq, const COUNTING: bool>(
             );
             let (x1, y1) = snake_fwd(old, new, x_start as usize, y_start as usize);
             if COUNTING {
-                cost += 1 + x1 - x_start as usize;
+                let walked = x1 - x_start as usize;
+                cost += 1 + walked;
+                if walked >= ANCHOR && fwd_anchor.map_or(true, |(ax, ay)| x1 + y1 > ax + ay) {
+                    fwd_anchor = Some((x1, y1));
+                }
             }
             if let Some(cell) = v1.get_mut(k1_offset) {
                 *cell = x1 as i32;
@@ -641,11 +734,17 @@ fn bisect_walk<T: Eq, const COUNTING: bool>(
                             let x2 = text1_length - v2k;
                             if x1 as i32 >= x2 {
                                 // Overlap detected.
-                                return Some((x1, y1));
+                                limit.charge(cost);
+                                return Split::Middle(x1, y1);
                             }
                         }
                     }
                 }
+            }
+            if COUNTING && cost as u64 > room {
+                limit.charge(cost);
+                stopped_at = Some(d);
+                break 'search;
             }
             k1 += 2;
         }
@@ -669,7 +768,11 @@ fn bisect_walk<T: Eq, const COUNTING: bool>(
             );
             let (x2, y2) = snake_rev(old, new, x_start as usize, y_start as usize);
             if COUNTING {
-                cost += 1 + x2 - x_start as usize;
+                let walked = x2 - x_start as usize;
+                cost += 1 + walked;
+                if walked >= ANCHOR && rev_anchor.map_or(true, |(ax, ay)| x2 + y2 > ax + ay) {
+                    rev_anchor = Some((x2, y2));
+                }
             }
             if let Some(cell) = v2.get_mut(k2_offset) {
                 *cell = x2 as i32;
@@ -689,19 +792,54 @@ fn bisect_walk<T: Eq, const COUNTING: bool>(
                             // Mirror x2 onto top-left coordinate system.
                             if v1k >= text1_length - x2 as i32 {
                                 // Overlap detected.
-                                return Some((v1k as usize, y1 as usize));
+                                limit.charge(cost);
+                                return Split::Middle(v1k as usize, y1 as usize);
                             }
                         }
                     }
                 }
             }
+            if COUNTING && cost as u64 > room {
+                limit.charge(cost);
+                stopped_at = Some(d);
+                break 'search;
+            }
             k2 += 2;
         }
-        limit.charge(cost as u64);
+        limit.charge(cost);
     }
-    // Number of diffs equals number of tokens, no commonality at all — or the
-    // deadline expired.
-    None
+    // Without a stop the texts share no overlap at all.
+    let Some(d) = stopped_at else {
+        return Split::None;
+    };
+    let (n, m) = (old.len(), new.len());
+    // Without a long run to keep, split only once the edit cap is reached.
+    let capped = |v: &[i32]| (d >= MAX_OVER_BUDGET_EDITS).then(|| furthest(v, v_offset, d, n, m));
+    let mut head = fwd_anchor
+        .or_else(|| capped(v1).flatten())
+        .unwrap_or((0, 0));
+    let rev = rev_anchor
+        .or_else(|| capped(v2).flatten())
+        .unwrap_or((0, 0));
+    let mut tail = (n - rev.0, m - rev.1);
+    if head == (n, m) {
+        head = (0, 0);
+    }
+    if tail == (0, 0) {
+        tail = (n, m);
+    }
+    if head.0 > tail.0 || head.1 > tail.1 {
+        // The ends cross: keep the one that got further.
+        if head.0 + head.1 >= (n - tail.0) + (m - tail.1) {
+            tail = (n, m);
+        } else {
+            head = (0, 0);
+        }
+    }
+    if head == (0, 0) && tail == (n, m) {
+        return Split::None;
+    }
+    Split::Ends { head, tail }
 }
 
 #[cfg(test)]

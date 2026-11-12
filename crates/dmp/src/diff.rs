@@ -2,9 +2,8 @@
 // splitting), the cleanup passes, and diff-derived metrics. The token-generic
 // primitives live in engine.rs; text materialization happens here.
 
-use crate::engine::{self, Limit};
+use crate::engine::{self, Budget, Limit, Split};
 use crate::types::{Diff, DiffToken, Dmp, TDiff};
-use std::cell::Cell;
 use std::time::Duration;
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -82,7 +81,7 @@ impl Dmp {
     fn limit_from_now(&self) -> Limit {
         Limit {
             deadline: self.deadline_from_now(),
-            steps: self.diff_step_budget.map(Cell::new),
+            budget: self.diff_step_budget.map(Budget::new),
         }
     }
 
@@ -396,6 +395,16 @@ fn main_slices<T: DiffToken>(
         diffs.push(TDiff::new(0, T::to_tokens(&old[old.len() - suffix..])));
     }
     dmp.diff_cleanup_merge_impl(&mut diffs);
+    if limit.budget.as_ref().is_some_and(Budget::past_exact) {
+        // A delete and an insert of the same text from neighbouring boxes can
+        // cancel and leave two equalities side by side, which one merge misses.
+        while diffs
+            .windows(2)
+            .any(|pair| pair[0].operation == 0 && pair[1].operation == 0)
+        {
+            dmp.diff_cleanup_merge_impl(&mut diffs);
+        }
+    }
     diffs
 }
 
@@ -484,7 +493,8 @@ fn compute<T: DiffToken>(
 }
 
 /// Split on the Myers middle snake and recurse, or emit delete+insert when
-/// there is no overlap (or the deadline expired).
+/// there is no overlap (or the deadline expired), or finish an over-budget
+/// split without recursing.
 fn bisect_diff<T: DiffToken>(
     dmp: &mut Dmp,
     old: &[T],
@@ -494,7 +504,7 @@ fn bisect_diff<T: DiffToken>(
     scratch: &mut Vec<i32>,
 ) -> Vec<TDiff> {
     match engine::bisect(old, new, limit, scratch) {
-        Some((x, y)) => {
+        Split::Middle(x, y) => {
             // Compute both diffs serially on the split halves.
             let mut diffs = main_slices(
                 dmp,
@@ -516,14 +526,89 @@ fn bisect_diff<T: DiffToken>(
             ));
             diffs
         }
-        None => {
+        Split::None => {
             // Number of diffs equals number of characters, no commonality at all.
             vec![
                 TDiff::new(-1, T::to_tokens(old)),
                 TDiff::new(1, T::to_tokens(new)),
             ]
         }
+        Split::Ends { head, tail } => finish_over_budget(old, new, head, tail, limit, scratch),
     }
+}
+
+/// A box still to diff, with where it starts in the old and new text.
+type Part<'a, T> = (usize, usize, &'a [T], &'a [T]);
+
+/// Queue the three parts a split leaves, so the ends come off first.
+fn push_parts<'a, T>(
+    todo: &mut Vec<Part<'a, T>>,
+    (o, n, old, new): Part<'a, T>,
+    head: (usize, usize),
+    tail: (usize, usize),
+) {
+    todo.push((
+        o + head.0,
+        n + head.1,
+        &old[head.0..tail.0],
+        &new[head.1..tail.1],
+    ));
+    todo.push((o + tail.0, n + tail.1, &old[tail.0..], &new[tail.1..]));
+    todo.push((o, n, &old[..head.0], &new[..head.1]));
+}
+
+/// Diff what is left of an over-budget split. A loop, not recursion: these
+/// splits can be far too lopsided for the stack.
+fn finish_over_budget<T: DiffToken>(
+    old: &[T],
+    new: &[T],
+    head: (usize, usize),
+    tail: (usize, usize),
+    limit: &Limit,
+    scratch: &mut Vec<i32>,
+) -> Vec<TDiff> {
+    // Pieces keyed by old + new position, which orders them along the diff.
+    let mut pieces: Vec<(usize, TDiff)> = Vec::new();
+    let mut todo = Vec::new();
+    push_parts(&mut todo, (0, 0, old, new), head, tail);
+    while let Some((o, n, old, new)) = todo.pop() {
+        let prefix = engine::common_prefix(old, new);
+        if prefix > 0 {
+            pieces.push((o + n, TDiff::new(0, T::to_tokens(&old[..prefix]))));
+        }
+        let (o, n, old, new) = (o + prefix, n + prefix, &old[prefix..], &new[prefix..]);
+        let suffix = engine::common_suffix(old, new);
+        let (old_end, new_end) = (old.len() - suffix, new.len() - suffix);
+        if suffix > 0 {
+            pieces.push((
+                o + old_end + n + new_end,
+                TDiff::new(0, T::to_tokens(&old[old_end..])),
+            ));
+        }
+        let (old, new) = (&old[..old_end], &new[..new_end]);
+        // Bisect needs both sides non-empty and more than one token against one.
+        let split = if old.is_empty() || new.is_empty() || old.len() + new.len() < 3 {
+            Split::None
+        } else {
+            engine::bisect(old, new, limit, scratch)
+        };
+        let (head, tail) = match split {
+            Split::Middle(x, y) => ((x, y), (x, y)),
+            Split::Ends { head, tail } => (head, tail),
+            Split::None => {
+                if !old.is_empty() {
+                    pieces.push((o + n, TDiff::new(-1, T::to_tokens(old))));
+                }
+                if !new.is_empty() {
+                    pieces.push((o + old.len() + n, TDiff::new(1, T::to_tokens(new))));
+                }
+                continue;
+            }
+        };
+        push_parts(&mut todo, (o, n, old, new), head, tail);
+    }
+    pieces.sort_unstable_by_key(|piece| piece.0);
+    pieces.into_iter().map(|piece| piece.1).collect()
 }
 
 /// Line-mode speedup: diff on packed line ids first, then rediff the
@@ -691,7 +776,7 @@ mod tests {
                 dmp.word_mode = word_mode;
                 let unlimited = Limit {
                     deadline: None,
-                    steps: None,
+                    budget: None,
                 };
                 let byte_diff = main_slices(
                     &mut dmp,
@@ -715,3 +800,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod budget_tests;

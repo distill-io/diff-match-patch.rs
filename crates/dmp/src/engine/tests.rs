@@ -196,21 +196,69 @@ fn bisect_over_bytes() {
     let mut scratch = Vec::new();
     let unlimited = Limit {
         deadline: None,
-        steps: None,
+        budget: None,
     };
     assert_eq!(
         bisect(b"cat", b"map", &unlimited, &mut scratch),
-        Some((2, 2))
+        Split::Middle(2, 2)
     );
     // No shared tokens at all: no overlap to split on.
-    assert_eq!(bisect(b"abc", b"xyz", &unlimited, &mut scratch), None);
+    assert_eq!(
+        bisect(b"abc", b"xyz", &unlimited, &mut scratch),
+        Split::None
+    );
     // Expired deadline: give up immediately.
     let past = Instant::now() - std::time::Duration::from_secs(1);
     let expired = Limit {
         deadline: Some(past),
-        steps: None,
+        budget: None,
     };
-    assert_eq!(bisect(b"cat", b"map", &expired, &mut scratch), None);
+    assert_eq!(bisect(b"cat", b"map", &expired, &mut scratch), Split::None);
+}
+
+#[test]
+fn only_a_spent_budget_splits_at_the_ends() {
+    let old = [b"p".as_slice(), &[b'a'; 30], b"pqrs"].concat();
+    let new = [b"q".as_slice(), &[b'a'; 30], b"wxyz"].concat();
+    let mut scratch = Vec::new();
+    // Rounds 0 and 1 cost 6 of the 8 steps; round 2 walks the 30-token run
+    // and stops there, keeping its end as the head.
+    let budgeted = Limit {
+        deadline: None,
+        budget: Some(Budget::new(4)),
+    };
+    assert_eq!(
+        bisect(&old, &new, &budgeted, &mut scratch),
+        Split::Ends {
+            head: (31, 31),
+            tail: (35, 35)
+        }
+    );
+    let unlimited = Limit {
+        deadline: None,
+        budget: None,
+    };
+    assert_eq!(
+        bisect(&old, &new, &unlimited, &mut scratch),
+        Split::Middle(34, 31)
+    );
+    let far = Instant::now() + std::time::Duration::from_secs(3600);
+    let timed = Limit {
+        deadline: Some(far),
+        budget: None,
+    };
+    assert_eq!(
+        bisect(&old, &new, &timed, &mut scratch),
+        Split::Middle(34, 31)
+    );
+    let past = Instant::now() - std::time::Duration::from_secs(1);
+    for budget in [None, Some(Budget::new(4))] {
+        let expired = Limit {
+            deadline: Some(past),
+            budget,
+        };
+        assert_eq!(bisect(&old, &new, &expired, &mut scratch), Split::None);
+    }
 }
 
 #[test]
