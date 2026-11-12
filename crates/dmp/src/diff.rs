@@ -456,7 +456,8 @@ fn compute<T: DiffToken>(
         }
     }
 
-    if limit.deadline.is_some() {
+    // Half-match work is not counted, so only a timeout without a budget runs it.
+    if limit.deadline.is_some() && limit.budget.is_none() {
         if let Some(hm) = engine::half_match(old, new) {
             // A half-match was found, send both pairs off for separate processing.
             let mid_common: Vec<char> = T::to_tokens(&old[hm.old_a..hm.old_a + hm.common]);

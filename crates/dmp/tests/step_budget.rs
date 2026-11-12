@@ -71,14 +71,28 @@ fn an_over_budget_diff_keeps_long_matches() {
 }
 
 #[test]
-fn a_budget_alone_does_not_turn_on_half_match() {
-    // Half-match trades optimality for speed and belongs to the timeout.
+fn a_budget_turns_off_half_match() {
+    // Half-match does work the budget does not count, so a budget skips it.
     let (old, new) = ("qHilloHelloHew", "xHelloHeHulloy");
     let mut timed = Dmp::new();
     timed.diff_timeout = Some(1.0);
     let optimal = differ(None).diff_main(old, new, false);
     assert_ne!(timed.diff_main(old, new, false), optimal);
     assert_eq!(differ(Some(u64::MAX)).diff_main(old, new, false), optimal);
+    timed.diff_timeout = Some(1.0e6);
+    timed.diff_step_budget = Some(u64::MAX);
+    assert_eq!(timed.diff_main(old, new, false), optimal);
+}
+
+#[test]
+fn a_zero_budget_bounds_a_diff_that_half_match_would_scan() {
+    let old = "ab".repeat(20_000);
+    let new = "ba".repeat(20_000) + "c";
+    let mut timed = Dmp::new();
+    timed.diff_step_budget = Some(0);
+    let diffs = timed.diff_main(&old, &new, false);
+    assert_eq!(diffs, differ(Some(0)).diff_main(&old, &new, false));
+    assert_eq!(diffs, pieces(&[(-1, &old), (1, &new)]));
 }
 
 struct Lcg(u64);

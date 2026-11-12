@@ -393,8 +393,8 @@ pub(crate) struct HalfMatch {
     pub common: usize,
 }
 
-/// DMP diff_halfMatch over token slices. Caller gates this on the timeout
-/// setting (half-match trades optimality for speed).
+/// DMP diff_halfMatch over token slices. Callers run it only under a timeout
+/// with no step budget (half-match trades optimality for speed).
 pub(crate) fn half_match<T: Eq>(old: &[T], new: &[T]) -> Option<HalfMatch> {
     let old_is_long = old.len() > new.len();
     let (long, short) = if old_is_long { (old, new) } else { (new, old) };
