@@ -210,7 +210,14 @@ impl Dmp {
         // has an effective expected position of 22.
         let mut delta: i32 = 0;
         let mut results: Vec<bool> = vec![false; patches_copy.len()];
-        for x in 0..patches_copy.len() {
+        let (mut text, first) = apply_exact_run(
+            self.match_maxbits,
+            &patches_copy,
+            &text,
+            &mut results,
+            &mut delta,
+        );
+        for x in first..patches_copy.len() {
             let expected_loc: i32 = patches_copy[x].start2 + delta;
             let text1: Vec<char> = diff_text1_chars(&patches_copy[x].diffs);
             let mut start_loc: i32;
@@ -634,6 +641,47 @@ fn add_context(dmp: &Dmp, patch: &mut Patch, head: &[char], tail: &[char]) {
     // Extend lengths.
     patch.length1 += prefix_length + suffix_length;
     patch.length2 += prefix_length + suffix_length;
+}
+
+/// Applies the leading patches that match exactly where expected and change
+/// nothing before the previous one's change ends; returns the patched text and
+/// how many patches that was.
+fn apply_exact_run(
+    maxbits: i32,
+    patches: &[Patch],
+    text: &[char],
+    results: &mut [bool],
+    delta: &mut i32,
+) -> (Vec<char>, usize) {
+    // The text so far is `done` followed by `text[pos..]`.
+    let (mut done, mut pos, mut first) = (vec![], 0, 0);
+    while first < patches.len() {
+        let expected_loc: i32 = patches[first].start2 + *delta;
+        let text1: Vec<char> = diff_text1_chars(&patches[first].diffs);
+        let text2: Vec<char> = diff_text2_chars(&patches[first].diffs);
+        // The patch keeps its first `same` and last `same_end` chars.
+        let same = engine::common_prefix(&text1, &text2);
+        let same_end = engine::common_suffix(&text1[same..], &text2[same..]);
+        let len = done.len() + text.len() - pos;
+        let loc = max(0, expected_loc) as usize;
+        if text1.len() as i32 > maxbits
+            || loc + same < done.len()
+            || loc + text1.len() > len
+            || span(&done, &text[pos..], loc, loc + text1.len()) != text1
+        {
+            break;
+        }
+        // The matcher returns the clamped loc for any exact match there.
+        results[first] = true;
+        *delta = loc as i32 - expected_loc;
+        let kept = loc + same - done.len();
+        done.extend_from_slice(&text[pos..pos + kept]);
+        done.extend_from_slice(&text2[same..text2.len() - same_end]);
+        pos += kept + text1.len() - same - same_end;
+        first += 1;
+    }
+    done.extend_from_slice(&text[pos..]);
+    (done, first)
 }
 
 /// The chars `from..to` of the text `head` followed by `tail`; panics where
