@@ -134,8 +134,11 @@ impl Dmp {
         let mut patch: Patch = Patch::new(vec![], 0, 0, 0, 0);
         let mut char_count1 = 0; // Number of characters into the text1 string.
         let mut char_count2 = 0; // Number of characters into the text2 string.
-        let mut prepatch: Vec<char> = text1.chars().collect(); // Recreate the patches to determine context info.
-        let mut postpatch: Vec<char> = prepatch.clone();
+        let source: Vec<char> = text1.chars().collect();
+        // The text with the edits so far applied is `done` followed by `rest`.
+        let mut done: Vec<char> = vec![];
+        let mut rest: &[char] = &source;
+        let mut prepatch: Vec<char> = source.clone(); // Recreate the patches to determine context info.
         for i in 0..diffs.len() {
             let temp1: &Vec<char> = &(diffs[i].text.chars().collect());
             if patch.diffs.is_empty() && diffs[i].operation != 0 {
@@ -149,20 +152,16 @@ impl Dmp {
                     .diffs
                     .push(Diff::new(diffs[i].operation, diffs[i].text.clone()));
                 patch.length2 += temp1.len() as i32;
-                postpatch.splice(
-                    char_count2 as usize..char_count2 as usize,
-                    temp1.iter().copied(),
-                );
+                rest = keep_until(&mut done, rest, char_count2 as usize);
+                done.extend_from_slice(temp1);
             } else if diffs[i].operation == -1 {
                 // Deletion.
                 patch
                     .diffs
                     .push(Diff::new(diffs[i].operation, diffs[i].text.clone()));
                 patch.length1 += temp1.len() as i32;
-                postpatch.splice(
-                    char_count2 as usize..char_count2 as usize + temp1.len(),
-                    std::iter::empty(),
-                );
+                rest = keep_until(&mut done, rest, char_count2 as usize);
+                rest = &rest[temp1.len()..];
             } else if temp1.len() as i32 <= self.patch_margin * 2
                 && !patch.diffs.is_empty()
                 && i != diffs.len() - 1
@@ -179,7 +178,7 @@ impl Dmp {
                     self.patch_add_context(&mut patch, &mut prepatch);
                     patches.push(patch);
                     patch = Patch::new(vec![], 0, 0, 0, 0);
-                    prepatch = postpatch.clone();
+                    prepatch = [&done[..], rest].concat();
                     char_count1 = char_count2;
                 }
             }
@@ -613,6 +612,13 @@ impl Dmp {
             .next()
             .unwrap_or_else(|| panic!("Invalid patch string: {}", textline))
     }
+}
+
+/// Moves the chars of `rest` that come before position `at` onto `done`.
+fn keep_until<'a>(done: &mut Vec<char>, rest: &'a [char], at: usize) -> &'a [char] {
+    let (kept, rest) = rest.split_at(at - done.len());
+    done.extend_from_slice(kept);
+    rest
 }
 
 /// diff_text1 (equalities + deletions) as chars — patch_apply works entirely

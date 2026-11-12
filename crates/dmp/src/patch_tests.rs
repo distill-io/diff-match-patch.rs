@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "patch_make_tests.rs"]
+mod make;
+
 struct Lcg(u64);
 impl Lcg {
     fn below(&mut self, bound: u64) -> usize {
